@@ -1,0 +1,29 @@
+{
+  "name": "lifetime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n client,storage \"vite --host 127.0.0.1\" \"tsx watch src/server/index.ts\"",
+    "build": "tsc --noEmit && vite build",
+    "start": "tsx src/server/index.ts",
+    "test": "vitest run",
+    "format": "prettier --write src/main.ts src/shared src/server src/client/app.ts src/client/ui.ts src/client/styles.css src/client/actors src/client/play src/client/services src/client/rendering/viewport.ts src/client/rendering/animationPlayer.ts tests",
+    "qa:fixtures": "tsx tests/browserServer.ts"
+  },
+  "dependencies": {
+    "@voxel-studio/render-runtime": "file:vendor/voxel-render-runtime",
+    "fflate": "^0.8.2",
+    "three": "0.160.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/three": "^0.179.0",
+    "concurrently": "^9.2.0",
+    "prettier": "^3.9.9",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0"
+  }
+}

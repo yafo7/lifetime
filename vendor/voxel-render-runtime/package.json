@@ -1,0 +1,20 @@
+{
+  "name": "@voxel-studio/render-runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["src", "model", "README.md"],
+  "exports": {
+    ".": "./src/index.js",
+    "./environment": "./src/environment.js",
+    "./effects": "./src/effects.js",
+    "./model-water": "./src/model-water.js",
+    "./outline": "./src/outline.js",
+    "./postprocess": "./src/postprocess.js",
+    "./*": "./src/*",
+    "./model/material-tags-v1.json": "./model/material-tags-v1.json"
+  },
+  "peerDependencies": {
+    "three": "^0.160.0"
+  }
+}
