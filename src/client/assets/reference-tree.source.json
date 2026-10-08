@@ -1,0 +1,6 @@
+{
+  "source": "worldforge-baseline/data/lifetime/actors.json#referenceTree",
+  "revisionId": "reference-tree-9cafbd41-b60b-4ba7-955e-7c59137cfd18",
+  "createdAt": 1790168129237,
+  "note": "Copied reference model; no runtime dependency on original project."
+}

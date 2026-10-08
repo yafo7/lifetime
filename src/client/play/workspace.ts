@@ -1,3 +1,10 @@
+import { SceneMotionPort } from "../services/sceneMotionPort";
+import { SceneBindingPanel } from "./sceneBindingPanel";
+import { CharacterMachinePanel } from "./characterMachinePanel";
+import {
+  sampleTerrainHeight,
+  getSpawnPoints,
+} from "../rendering/map/shared/map";
 import type { Actor, ActorInstance, Performance } from "../../shared/contracts";
 import type { MapResource } from "../../shared/maps";
 import { resources } from "../services/resources";
@@ -7,6 +14,9 @@ import { message } from "../services/jobs";
 
 export class PlayWorkspace {
   private view: Viewport;
+  readonly motion: SceneMotionPort;
+  private actionPanel: SceneBindingPanel;
+  private machinePanel: CharacterMachinePanel;
   private map: MapResource | null = null;
   private draft: Performance | null = null;
   private drafts = new Map<string, Performance>();
@@ -27,7 +37,7 @@ export class PlayWorkspace {
         <div>
           <span class="eyebrow">PERFORMANCE WORKSPACE</span>
           <h1>演出区域</h1>
-          <p>打开地图，加入演员，播放已有动画。</p>
+          <p>打开地图，绑定演员动作，设置角色状态之间的关系。</p>
         </div>
         <span class="lifetime-status-pill" data-map-status>尚未打开地图</span>
       </div>
@@ -50,6 +60,15 @@ export class PlayWorkspace {
             <div class="actor-preview-toolbar">
               <span data-map-name>地图预览</span>
               <div class="toolbar-actions">
+                <button data-world-play class="secondary small">
+                  ▶ 播放全部角色
+                </button>
+                <button data-world-pause class="secondary small">
+                  暂停全部
+                </button>
+                <button data-world-stop class="secondary small">
+                  停止全部
+                </button>
                 <button data-fit class="secondary small">重置视角</button
                 ><a data-export class="button secondary small" hidden
                   >导出地图</a
@@ -73,7 +92,7 @@ export class PlayWorkspace {
                 type="range"
                 min="0"
                 max="1"
-                step="0.01"
+                step="any"
                 value="0"
                 aria-label="演出进度"
                 disabled
@@ -96,18 +115,15 @@ export class PlayWorkspace {
             ＋ 加入演出
           </button>
           <div data-instances class="clip-list instance-list"></div>
-          <div data-inspector hidden>
-            <label class="lifetime-field"
-              ><span>动画</span
-              ><select data-clip aria-label="演员实例动画"></select
-            ></label>
+          <details data-inspector hidden>
+            <summary>实例位置与尺寸</summary>
             <div class="transform-grid">
               ${["x", "y", "z", "rotation", "scale"].map((key, i) => `<label class="lifetime-field"><span>${["位置 X", "位置 Y", "位置 Z", "朝向（°）", "缩放"][i]}</span><input data-transform="${key}" type="number" step="${key === "rotation" ? "5" : "0.1"}" ${key === "scale" ? 'min="0.01"' : ""} aria-label="${["位置 X", "位置 Y", "位置 Z", "朝向", "缩放"][i]}"></label>`).join("")}
             </div>
-            <label class="check"
-              ><input data-loop type="checkbox" />循环动画</label
-            ><button data-remove class="secondary small">移除此实例</button>
-          </div>
+            <button data-remove class="secondary small">移除此实例</button>
+          </details>
+          <div data-character-machine class="scene-action-panel" hidden></div>
+          <div data-scene-action-panel class="scene-action-panel" hidden></div>
           <div class="draft-save">
             <label class="lifetime-field"
               ><span>演出名称</span
@@ -122,15 +138,67 @@ export class PlayWorkspace {
         </aside>
       </div>`;
     this.view = new Viewport(select(host, "[data-canvas]"));
+    this.motion = new SceneMotionPort(this.view);
+    window.lifetimeSceneMotion = this.motion;
+    this.actionPanel = new SceneBindingPanel(
+      select(host, "[data-scene-action-panel]"),
+      select(host, "[data-canvas]"),
+      this.view,
+      this.motion,
+      () => this.markDirty(),
+      (text) => this.notify(text),
+    );
+    this.machinePanel = new CharacterMachinePanel(
+      select(host, "[data-character-machine]"),
+      this.motion,
+      (text) => this.notify(text),
+    );
+    this.motion.onChange = () => {
+      this.actionPanel.status();
+      this.machinePanel.status();
+      this.renderInstanceStatus();
+    };
+    this.motion.onConfigurationChange = () => {
+      this.markDirty();
+      this.renderInstances();
+    };
     this.view.onPlayback = (time, duration, playing) => {
+      const actionState = this.selectedId
+        ? this.motion.getExecutionState(this.selectedId)
+        : null;
+      const instance = this.draft?.instances.find(
+        (i) => i.id === this.selectedId,
+      );
+      const selectedAction = instance?.sceneMotion?.actions.some(
+        (a) => a.id === instance.sceneMotion?.selectedActionId,
+      );
+      const machine = this.selectedId
+        ? this.motion.getMachineState(this.selectedId)
+        : null;
+      const machineEnabled = !!instance?.sceneMotion?.machine?.enabled;
+      if ((selectedAction || machineEnabled) && !actionState) {
+        time = 0;
+        duration = machineEnabled ? 0 : this.actionPanel.duration;
+        playing = false;
+      }
+      if (actionState) {
+        time = actionState.elapsed;
+        duration = actionState.duration;
+        playing = actionState.status === "running";
+      }
+      if (machine)
+        playing = ["running", "waiting", "starting"].includes(machine.status);
       const slider = select<HTMLInputElement>(host, "[data-seek]");
       slider.max = String(duration || 1);
       slider.value = String(time);
-      slider.disabled = !duration;
+      slider.disabled = !duration || (!!selectedAction && !actionState);
       select(host, "[data-time]").textContent =
         `${time.toFixed(2)} / ${duration.toFixed(2)} 秒`;
       const b = select<HTMLButtonElement>(host, "[data-play]");
-      b.disabled = !duration;
+      select<HTMLElement>(host, "[data-stop]").hidden =
+        !!selectedAction || machineEnabled;
+      b.disabled =
+        this.loading || (!selectedAction && !machineEnabled && !duration);
       b.textContent = playing ? "Ⅱ 暂停" : "▶ 播放";
     };
     this.view.onSelect = (id) => {
@@ -155,10 +223,45 @@ export class PlayWorkspace {
         }).catch((e) => this.notify(message(e)));
     };
     on("[data-fit]", () => this.view.fit());
-    on("[data-play]", () => this.view.toggle());
-    on("[data-stop]", () => this.view.stop());
-    select<HTMLInputElement>(host, "[data-seek]").oninput = (e) =>
-      this.view.seek(Number((e.target as HTMLInputElement).value));
+    on("[data-world-play]", () => this.exclusive(() => this.motion.playAll()));
+    on("[data-world-pause]", () => this.motion.pauseAll());
+    on("[data-world-stop]", () => this.motion.cancelAll());
+    on("[data-play]", () =>
+      this.exclusive(async () => {
+        const i = this.draft?.instances.find((i) => i.id === this.selectedId);
+        if (i?.sceneMotion?.machine?.enabled) {
+          const state = this.motion.getMachineState(i.id);
+          if (
+            state &&
+            ["running", "waiting", "starting"].includes(state.status)
+          )
+            this.motion.pauseExecution(i.id);
+          else if (state?.status === "paused")
+            this.motion.resumeExecution(i.id);
+          else await this.motion.startStateMachine(i.id);
+        } else if (i?.sceneMotion?.selectedActionId) {
+          const state = this.motion.getExecutionState(i.id);
+          if (state?.status === "running") this.motion.pauseExecution(i.id);
+          else if (state?.status === "paused")
+            this.motion.resumeExecution(i.id);
+          else await this.actionPanel.preview();
+        } else this.view.toggle();
+      }),
+    );
+    on("[data-stop]", () => {
+      this.motion.cancelAll();
+      this.view.stop();
+    });
+    select<HTMLInputElement>(host, "[data-seek]").oninput = (e) => {
+      try {
+        const time = Number((e.target as HTMLInputElement).value);
+        if (this.selectedId && this.motion.getExecutionState(this.selectedId))
+          this.motion.seekExecution(this.selectedId, time);
+        else this.view.seek(time);
+      } catch (e) {
+        this.notify(message(e));
+      }
+    };
     on("[data-add]", () => this.exclusive(() => this.addActor()));
     on("[data-remove]", () => this.removeActor());
     on("[data-save]", () =>
@@ -168,6 +271,8 @@ export class PlayWorkspace {
           select<HTMLInputElement>(host, "[data-draft-name]").value.trim() ||
           "未命名演出";
         this.draft = await resources.savePerformance(this.draft);
+        this.motion.bind(this.map!, this.actors, this.draft.instances);
+        this.renderInstances();
         this.dirtyDrafts.delete(this.draft.id);
         this.updateDirty();
         await this.refreshPerformances();
@@ -185,10 +290,6 @@ export class PlayWorkspace {
     };
     select<HTMLSelectElement>(host, "[data-actor]").onchange = () =>
       void this.loadLibraryActor().catch((e) => this.notify(message(e)));
-    select<HTMLSelectElement>(host, "[data-clip]").onchange = () =>
-      this.editInstance();
-    select<HTMLInputElement>(host, "[data-loop]").onchange = () =>
-      this.editInstance();
     host
       .querySelectorAll<HTMLInputElement>("[data-transform]")
       .forEach((input) => (input.onchange = () => this.editInstance()));
@@ -315,6 +416,8 @@ export class PlayWorkspace {
       if (!actor.modelRevisions.some((r) => r.id === instance.modelRevisionId))
         throw new Error("演出引用的模型版本不存在");
     }
+    this.motion.unbind();
+    this.actionPanel.set(null, null, null);
     await this.view.openMap(map);
     this.map = map;
     this.draft = structuredClone(draft);
@@ -328,6 +431,7 @@ export class PlayWorkspace {
         actor.animations.find((c) => c.id === instance.clipId) ?? null,
       );
     }
+    this.motion.bind(map, this.actors, this.draft.instances);
     this.selectedId = this.draft.instances[0]?.id ?? null;
     if (saved) this.dirtyDrafts.delete(saved.id);
     select<HTMLElement>(this.host, "[data-placeholder]").hidden = true;
@@ -358,12 +462,23 @@ export class PlayWorkspace {
       actorId: actor.id,
       modelRevisionId: model.id,
       clipId: null,
-      position: [0, 0, 0],
+      position: (() => {
+        const p = getSpawnPoints(this.map!.map)[0] ?? [0, 0, 0];
+        return [p[0], sampleTerrainHeight(this.map!.map, p[0], p[2]), p[2]] as [
+          number,
+          number,
+          number,
+        ];
+      })(),
       rotation: 0,
       scale: 1,
       loop: false,
     };
     await this.view.add(instance, model.modelJson, null);
+    // New instances fit a human-scale courtyard; the resource model stays unchanged.
+    const size = this.view.instanceSize(instance.id);
+    instance.scale = 2 / Math.max(0.01, size[1]);
+    this.view.updateInstance(instance, null);
     this.actors.set(actor.id, actor);
     this.draft.instances.push(instance);
     this.selectedId = instance.id;
@@ -372,10 +487,12 @@ export class PlayWorkspace {
   }
   private removeActor(): void {
     if (!this.draft || !this.selectedId) return;
+    this.motion.cancelExecution(this.selectedId);
     this.view.remove(this.selectedId);
-    this.draft.instances = this.draft.instances.filter(
-      (i) => i.id !== this.selectedId,
+    const removeIndex = this.draft.instances.findIndex(
+      (i) => i.id === this.selectedId,
     );
+    this.draft.instances.splice(removeIndex, 1);
     this.selectedId = this.draft.instances[0]?.id ?? null;
     this.markDirty();
     this.renderInstances();
@@ -386,7 +503,7 @@ export class PlayWorkspace {
     select(this.host, "[data-instances]").innerHTML = instances
       .map(
         (i, n) =>
-          `<button class="clip-item ${i.id === this.selectedId ? "active" : ""}" data-instance-id="${i.id}"><b>${escape(this.actors.get(i.actorId)?.name)} · ${n + 1}</b><small>${i.clipId ? "动画已选择" : "静态模型"}</small></button>`,
+          `<button class="clip-item ${i.id === this.selectedId ? "active" : ""}" data-instance-id="${i.id}"><b>${escape(this.actors.get(i.actorId)?.name)} · ${n + 1}</b><small data-instance-status="${i.id}"></small></button>`,
       )
       .join("");
     this.host.querySelectorAll<HTMLButtonElement>("[data-instance-id]").forEach(
@@ -398,23 +515,14 @@ export class PlayWorkspace {
     );
     const instance = instances.find((i) => i.id === this.selectedId);
     select<HTMLElement>(this.host, "[data-inspector]").hidden = !instance;
+    this.actionPanel.set(
+      this.map,
+      instance ?? null,
+      instance ? (this.actors.get(instance.actorId) ?? null) : null,
+    );
+    this.machinePanel.set(instance ?? null);
+    this.renderInstanceStatus();
     if (!instance) return;
-    const clips =
-      this.actors
-        .get(instance.actorId)
-        ?.animations.filter(
-          (c) => c.modelRevisionId === instance.modelRevisionId,
-        ) ?? [];
-    const menu = select<HTMLSelectElement>(this.host, "[data-clip]");
-    menu.innerHTML =
-      '<option value="">静态模型</option>' +
-      clips
-        .map(
-          (c) =>
-            `<option value="${escape(c.id)}">${escape(c.name)} · ${c.duration.toFixed(2)} 秒</option>`,
-        )
-        .join("");
-    menu.value = instance.clipId ?? "";
     for (const [key, value] of Object.entries({
       x: instance.position[0],
       y: instance.position[1],
@@ -424,7 +532,25 @@ export class PlayWorkspace {
     }))
       select<HTMLInputElement>(this.host, `[data-transform="${key}"]`).value =
         String(value);
-    select<HTMLInputElement>(this.host, "[data-loop]").checked = instance.loop;
+  }
+  private renderInstanceStatus() {
+    for (const i of this.draft?.instances ?? []) {
+      const node = this.host.querySelector<HTMLElement>(
+        `[data-instance-status="${i.id}"]`,
+      );
+      if (!node) continue;
+      const state = this.motion.getMachineState(i.id),
+        rules = i.sceneMotion?.machine;
+      const name =
+        rules?.states.find((s) => s.id === state?.stateId)?.name ?? "";
+      node.textContent = state
+        ? `${name} · ${{ starting: "准备中", running: "执行中", waiting: "等待中", paused: "已暂停", completed: "已完成", stopped: "已停止", failed: "失败" }[state.status]}`
+        : rules?.enabled
+          ? "状态机待播放"
+          : i.clipId
+            ? "动画已选择"
+            : "静态模型";
+    }
   }
   private editInstance(): void {
     const instance = this.draft?.instances.find(
@@ -441,12 +567,16 @@ export class PlayWorkspace {
       this.renderInstances();
       return;
     }
+    this.motion.cancelExecution(instance.id);
+    const oldScale = instance.scale;
     instance.position = [values[0], values[1], values[2]];
     instance.rotation = values[3];
     instance.scale = values[4];
-    instance.clipId =
-      select<HTMLSelectElement>(this.host, "[data-clip]").value || null;
-    instance.loop = select<HTMLInputElement>(this.host, "[data-loop]").checked;
+    if (instance.sceneMotion && oldScale !== instance.scale) {
+      const ratio = instance.scale / oldScale;
+      instance.sceneMotion.navigation.radius *= ratio;
+      instance.sceneMotion.navigation.height *= ratio;
+    }
     const clip =
       this.actors
         .get(instance.actorId)
@@ -466,6 +596,8 @@ export class PlayWorkspace {
         : "演出已保存";
   }
   setActive(active: boolean): void {
+    if (!active) this.motion.pauseAll();
+    this.actionPanel.setActive(active);
     this.view.setActive(active);
     if (active)
       void this.resourcesChanged().catch((e) => this.notify(message(e)));
@@ -477,6 +609,8 @@ export class PlayWorkspace {
     this.renderInstances();
   }
   dispose(): void {
+    this.actionPanel.dispose();
+    this.motion.dispose();
     this.view.dispose();
   }
 }

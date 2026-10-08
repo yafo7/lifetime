@@ -14,6 +14,7 @@
   "dependencies": {
     "@voxel-studio/render-runtime": "file:vendor/voxel-render-runtime",
     "fflate": "^0.8.2",
+    "recast-navigation": "^0.43.1",
     "three": "0.160.1"
   },
   "devDependencies": {

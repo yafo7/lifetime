@@ -1,3 +1,4 @@
+import type { SavedAction } from "../shared/motion";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +7,7 @@ import { decodeMapFile, encodeMapFile } from "./mapFiles";
 import type { MapResource } from "../shared/maps";
 import type {
   AnimationClip,
+  ActionPool,
   ModelRevision,
   Performance,
 } from "../shared/contracts";
@@ -122,6 +124,24 @@ export function createServer(store: Store, publicRoot?: string): http.Server {
         json(await store.appendClip(id, body as AnimationClip), 201);
         return;
       }
+      if (
+        kind === "actors" &&
+        id &&
+        req.method === "POST" &&
+        (action === "actions" || action === "pools")
+      ) {
+        json(await store.saveAction(id, body as ActionPool), 201);
+        return;
+      }
+      if (
+        kind === "actors" &&
+        id &&
+        req.method === "POST" &&
+        action === "motion-actions"
+      ) {
+        json(await store.saveMotionAction(id, body as SavedAction), 201);
+        return;
+      }
       if (kind === "performances" && req.method === "PUT" && id === body.id) {
         json(await store.savePerformance(body as Performance));
         return;
@@ -132,6 +152,7 @@ export function createServer(store: Store, publicRoot?: string): http.Server {
       res.end(
         JSON.stringify({
           error: error instanceof Error ? error.message : "操作失败",
+          code: (error as { code?: string })?.code,
         }),
       );
     }

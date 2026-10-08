@@ -12,6 +12,9 @@ import { generateModel, generateAnimation } from "../services/generation";
 import { Jobs, message } from "../services/jobs";
 import { escape, select, button } from "../ui";
 
+import { MotionPort } from "../services/motionPort";
+import { ActionPanel } from "./actionPanel";
+
 interface Draft {
   modelPrompt: string;
   animationPrompt: string;
@@ -39,6 +42,9 @@ export class ActorsWorkspace {
   private version = 0;
   private view: Viewport;
   private active = false;
+  private actions: ActionPanel;
+  readonly motion: MotionPort;
+  private readyRevision = "";
   constructor(
     private host: HTMLElement,
     private jobs: Jobs,
@@ -68,12 +74,15 @@ export class ActorsWorkspace {
         <span class="lifetime-status-pill" data-status>准备就绪</span>
       </div>
       <div class="actors-layout">
-        <aside class="lifetime-panel animation-library">
-          <div class="panel-heading">
-            <h2>动画库</h2>
-            <span data-clip-count class="muted">0</span>
-          </div>
-          <div data-clips class="clip-list"></div>
+        <aside class="lifetime-panel animation-library split-library">
+          <section class="library-half">
+            <div class="panel-heading">
+              <h2>动画库</h2>
+              <span data-clip-count class="muted">0</span>
+            </div>
+            <div data-clips class="clip-list library-scroll"></div>
+          </section>
+          <section class="library-half" data-actions></section>
         </aside>
         <section class="actor-preview-column">
           <div class="actor-preview-card">
@@ -99,7 +108,7 @@ export class ActorsWorkspace {
                 type="range"
                 min="0"
                 max="1"
-                step="0.01"
+                step="any"
                 value="0"
                 aria-label="动画进度"
                 disabled
@@ -107,96 +116,150 @@ export class ActorsWorkspace {
               ><label class="check"
                 ><input data-loop type="checkbox" />循环</label
               >
+              <label class="check" data-rate-control
+                >速率<input
+                  data-preview-rate
+                  aria-label="动画预览倍率"
+                  type="range"
+                  min="0.25"
+                  max="3"
+                  step="0.05"
+                  value="1"
+                /><output data-preview-rate-value>1.00×</output></label
+              >
             </div>
+            <div data-action-timeline class="action-timeline" hidden></div>
           </div>
         </section>
         <aside class="lifetime-panel actor-controls-panel">
-          <div class="panel-heading"><h2>演员制作</h2></div>
-          <div class="name-row">
-            <input
-              data-name
-              aria-label="演员名称"
-              placeholder="演员名称"
-            /><button data-rename class="secondary small">保存名称</button>
+          <div class="panel-heading">
+            <h2 data-editor-title>演员制作</h2>
+            <button data-back-actor class="small" hidden>返回演员制作</button>
           </div>
-          <div class="panel-tabs">
-            <button data-tab="model" class="active">模型制作</button
-            ><button data-tab="animation">动画制作</button>
-          </div>
-          <div data-pane="model">
-            <label class="lifetime-field"
-              ><span>模型描述</span
-              ><textarea
-                data-model-prompt
-                rows="5"
-                placeholder="例如：一个穿旅行斗篷、背着小包的低多边形旅行者"
-              ></textarea>
-            </label>
-            <div class="field-grid">
-              <label class="lifetime-field"
-                ><span>Provider</span
-                ><select data-model-provider>
-                  <option value="gpt">GPT</option>
-                  <option value="deepseek">DeepSeek</option>
-                </select></label
-              ><label class="lifetime-field"
-                ><span>生成模式</span
-                ><select data-model-mode>
-                  ${["voxel-pro", "voxel", "standard", "lite", "curve", "wire", "math"].map((m) => `<option value="${m}">${m.toUpperCase()}</option>`).join("")}
-                </select></label
-              >
+          <div data-actor-editor>
+            <div class="name-row">
+              <input
+                data-name
+                aria-label="演员名称"
+                placeholder="演员名称"
+              /><button data-rename class="secondary small">保存名称</button>
             </div>
-            <button data-generate-model class="lifetime-primary">
-              生成模型
-            </button>
-            <p class="lifetime-help">
-              生成结果保存为新版本，已有动画继续绑定原模型。
-            </p>
-          </div>
-          <div data-pane="animation" hidden>
-            <label class="lifetime-field"
-              ><span>动作描述</span
-              ><textarea
-                data-animation-prompt
-                rows="5"
-                placeholder="例如：站在原地，抬起右手挥手"
-              ></textarea>
-            </label>
-            <div class="field-grid">
-              <label class="lifetime-field"
-                ><span>Provider</span
-                ><select data-animation-provider>
-                  <option value="gpt">GPT</option>
-                  <option value="deepseek">DeepSeek</option>
-                </select></label
-              ><label class="lifetime-field"
-                ><span>动画模式</span
-                ><select data-animation-mode>
-                  <option value="quick">QUICK</option>
-                  <option value="pro">PRO</option>
-                </select></label
-              >
+            <div class="panel-tabs">
+              <button data-tab="model" class="active">模型制作</button
+              ><button data-tab="animation">动画制作</button>
             </div>
-            <button data-generate-animation class="lifetime-primary">
-              生成动画
-            </button>
-            <p class="lifetime-help">
-              使用当前模型版本。动画时长由后端决定，生成后可直接播放。
-            </p>
+            <div data-pane="model">
+              <label class="lifetime-field"
+                ><span>模型描述</span
+                ><textarea
+                  data-model-prompt
+                  rows="5"
+                  placeholder="例如：一个穿旅行斗篷、背着小包的低多边形旅行者"
+                ></textarea>
+              </label>
+              <div class="field-grid">
+                <label class="lifetime-field"
+                  ><span>Provider</span
+                  ><select data-model-provider>
+                    <option value="gpt">GPT</option>
+                    <option value="deepseek">DeepSeek</option>
+                  </select></label
+                ><label class="lifetime-field"
+                  ><span>生成模式</span
+                  ><select data-model-mode>
+                    ${["voxel-pro", "voxel", "standard", "lite", "curve", "wire", "math"].map((m) => `<option value="${m}">${m.toUpperCase()}</option>`).join("")}
+                  </select></label
+                >
+              </div>
+              <button data-generate-model class="lifetime-primary">
+                生成模型
+              </button>
+              <p class="lifetime-help">
+                生成结果保存为新版本，已有动画继续绑定原模型。
+              </p>
+            </div>
+            <div data-pane="animation" hidden>
+              <label class="lifetime-field"
+                ><span>动作描述</span
+                ><textarea
+                  data-animation-prompt
+                  rows="5"
+                  placeholder="例如：站在原地，抬起右手挥手"
+                ></textarea>
+              </label>
+              <div class="field-grid">
+                <label class="lifetime-field"
+                  ><span>Provider</span
+                  ><select data-animation-provider>
+                    <option value="gpt">GPT</option>
+                    <option value="deepseek">DeepSeek</option>
+                  </select></label
+                ><label class="lifetime-field"
+                  ><span>动画模式</span
+                  ><select data-animation-mode>
+                    <option value="quick">QUICK</option>
+                    <option value="pro">PRO</option>
+                  </select></label
+                >
+              </div>
+              <button data-generate-animation class="lifetime-primary">
+                生成动画
+              </button>
+              <p class="lifetime-help">
+                使用当前模型版本。动画时长由后端决定，生成后可直接播放。
+              </p>
+            </div>
           </div>
+          <div data-action-editor hidden></div>
           <div class="actor-task-detail" data-jobs aria-live="polite"></div>
         </aside>
       </div>`;
-    this.view = new Viewport(select(host, "[data-canvas]"));
+    this.view = new Viewport(select(host, "[data-canvas]"), true);
+    this.motion = new MotionPort(this.view, () => {
+      ++this.version;
+      this.draft.clipId = "";
+      this.renderClips();
+    });
+    window.lifetimeMotion = this.motion;
+    this.actions = new ActionPanel(
+      select(host, "[data-actions]"),
+      select(host, "[data-action-editor]"),
+      () => this.setEditor(true),
+      this.motion,
+      this.notify,
+      select(host, "[data-canvas]"),
+      this.view,
+      select(host, "[data-action-timeline]"),
+    );
+    this.view.onMotionState = () => this.actions.status();
     this.view.onPlayback = (time, duration, playing) => {
+      const action = this.actions.playback;
+      if (action.selected && !this.view.isAction) {
+        time = 0;
+        duration = action.duration;
+        playing = false;
+      }
       const slider = select<HTMLInputElement>(host, "[data-seek]");
       slider.max = String(duration || 1);
       slider.value = String(time);
-      slider.disabled = !duration;
+      slider.disabled = !duration || (action.selected && !action.ready);
+      const rate = select<HTMLInputElement>(host, "[data-preview-rate]");
+      rate.value = String(this.view.playbackRate);
+      select(host, "[data-preview-rate-value]").textContent =
+        `${this.view.playbackRate.toFixed(2)}×`;
+      rate.disabled = !duration || this.view.isAction;
+      select<HTMLElement>(host, "[data-rate-control]").hidden =
+        this.view.isAction || action.selected;
+      select<HTMLInputElement>(host, "[data-loop]").disabled =
+        this.view.isAction;
+      select<HTMLInputElement>(host, "[data-loop]").closest<HTMLElement>(
+        "label",
+      )!.hidden = action.selected;
+      select<HTMLElement>(host, "[data-stop]").hidden = action.selected;
       select(host, "[data-time]").textContent =
         `${time.toFixed(2)} / ${duration.toFixed(2)} 秒`;
       const play = select<HTMLButtonElement>(host, "[data-play]");
-      play.disabled = !duration;
+      play.disabled = action.selected ? !action.ready : !duration;
       play.textContent = playing ? "Ⅱ 暂停" : "▶ 播放";
       play.setAttribute("aria-label", playing ? "暂停动画" : "播放动画");
     };
@@ -217,15 +280,28 @@ export class ActorsWorkspace {
       select(host, "[data-current-actor]").textContent = this.actor.name;
       this.notify("演员名称已保存");
     });
+    on("[data-back-actor]", () => this.setEditor(false));
     on("[data-fit]", () => this.view.fit());
-    on("[data-play]", () => this.view.toggle());
+    on("[data-play]", () => {
+      if (this.actions.playback.selected) this.actions.togglePlayback();
+      else this.view.toggle();
+    });
     on("[data-stop]", () => this.view.stop());
     on("[data-generate-model]", () => this.generate("model"));
     on("[data-generate-animation]", () => this.generate("animation"));
-    select<HTMLInputElement>(host, "[data-seek]").oninput = (e) =>
-      this.view.seek(Number((e.target as HTMLInputElement).value));
+    select<HTMLInputElement>(host, "[data-seek]").oninput = (e) => {
+      try {
+        const time = Number((e.target as HTMLInputElement).value);
+        if (this.actions.playback.selected) this.actions.seekPlayback(time);
+        else this.view.seek(time);
+      } catch (e) {
+        this.fail(e);
+      }
+    };
     select<HTMLInputElement>(host, "[data-loop]").onchange = (e) =>
       this.view.setLoop((e.target as HTMLInputElement).checked);
+    select<HTMLInputElement>(host, "[data-preview-rate]").oninput = (e) =>
+      this.view.setPlaybackRate(Number((e.target as HTMLInputElement).value));
     select<HTMLSelectElement>(host, "[data-revisions]").onchange = () => {
       this.capture();
       this.draft.clipId = "";
@@ -256,6 +332,16 @@ export class ActorsWorkspace {
     this.renderRevisions();
     this.renderClips();
     this.renderJobs();
+    this.actions.context(null, "");
+  }
+  private setEditor(action: boolean): void {
+    this.actions.setVisible(action);
+    select<HTMLElement>(this.host, "[data-actor-editor]").hidden = action;
+    select<HTMLElement>(this.host, "[data-action-editor]").hidden = !action;
+    select<HTMLElement>(this.host, "[data-back-actor]").hidden = !action;
+    select(this.host, "[data-editor-title]").textContent = action
+      ? "动作制作"
+      : "演员制作";
   }
   async start(): Promise<void> {
     const actors = await this.loadLibrary();
@@ -303,6 +389,8 @@ export class ActorsWorkspace {
   private async chooseActor(id: string): Promise<void> {
     this.capture();
     const version = ++this.version;
+    this.readyRevision = "";
+    this.motion.bind(null);
     this.view.clear();
     const actor = await resources.actor(id);
     if (version !== this.version) return;
@@ -347,21 +435,28 @@ export class ActorsWorkspace {
       (r) => r.id === this.draft.revisionId,
     );
     const version = ++this.version;
+    this.readyRevision = "";
+    this.motion.bind(null);
     this.view.clear();
     select<HTMLElement>(this.host, "[data-placeholder]").hidden =
       Boolean(model);
     this.renderClips();
+    this.actions.context(this.actor, this.draft.revisionId);
     this.renderJobs();
     if (!model) return;
     await this.view.model(model.modelJson);
     if (version !== this.version) return;
+    this.readyRevision = this.draft.revisionId;
+    this.actions.context(this.actor, this.draft.revisionId, true);
     this.chooseClip(this.draft.clipId, false);
   }
   private renderClips(): void {
     const clips =
-      this.actor?.animations.filter(
-        (c) => c.modelRevisionId === this.draft.revisionId,
-      ) ?? [];
+      this.actor?.animations
+        .filter((c) => c.modelRevisionId === this.draft.revisionId)
+        .slice()
+        .reverse()
+        .sort((a, b) => b.createdAt - a.createdAt) ?? [];
     select(this.host, "[data-clip-count]").textContent = String(clips.length);
     select(this.host, "[data-clips]").innerHTML = clips.length
       ? clips
@@ -372,14 +467,30 @@ export class ActorsWorkspace {
           .join("")
       : '<p class="empty-state">还没有动画。选择模型后，描述你想要的动作。</p>';
     this.host
-      .querySelectorAll<HTMLButtonElement>("[data-clip-id]")
-      .forEach(
-        (b) =>
-          (b.onclick = () => this.chooseClip(b.dataset.clipId!, true, true)),
-      );
+      .querySelectorAll<HTMLButtonElement>("[data-clips] [data-clip-id]")
+      .forEach((b) => {
+        b.draggable = true;
+        b.title = "点击播放；拖入文本指导引用";
+        b.ondragstart = (e) => {
+          const clip = clips.find((c) => c.id === b.dataset.clipId)!;
+          e.dataTransfer?.setData(
+            "application/x-lifetime-animation",
+            JSON.stringify({
+              clipId: clip.id,
+              modelRevisionId: clip.modelRevisionId,
+            }),
+          );
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+          this.setEditor(true);
+        };
+        b.onclick = () => this.chooseClip(b.dataset.clipId!, true, true);
+      });
   }
   private chooseClip(id: string, play: boolean, userChoice = false): void {
-    if (userChoice) ++this.version;
+    if (userChoice) {
+      ++this.version;
+      this.setEditor(false);
+    }
     const clip =
       this.actor?.animations.find(
         (c) => c.id === id && c.modelRevisionId === this.draft.revisionId,
@@ -462,6 +573,11 @@ export class ActorsWorkspace {
         try {
           if (this.actor?.id === actorId) {
             this.actor = actor;
+            this.actions.context(
+              actor,
+              this.draft.revisionId,
+              this.readyRevision === this.draft.revisionId,
+            );
             if (this.version === selectedVersion) {
               if (kind === "model") {
                 this.draft.revisionId = value.id;
@@ -488,7 +604,8 @@ export class ActorsWorkspace {
   renderJobs(): void {
     const jobs = this.jobs.items
       .filter((j) => j.actorId === this.actor?.id)
-      .slice(-4);
+      .slice()
+      .reverse();
     select(this.host, "[data-jobs]").innerHTML = jobs
       .map(
         (j) =>
@@ -522,10 +639,32 @@ export class ActorsWorkspace {
       !this.actor || !this.draft.revisionId || busy;
   }
   setActive(active: boolean): void {
+    const returning = active && !this.active;
     this.active = active;
     this.view.setActive(active);
+    this.actions.setActive(active);
+    if (returning && this.actor) {
+      const id = this.actor.id,
+        version = this.version;
+      void resources
+        .actor(id)
+        .then((actor) => {
+          if (!this.active || this.actor?.id !== id || version !== this.version)
+            return;
+          this.actor = actor;
+          // ActionPanel.context keeps its current draft while refreshing the library.
+          this.actions.context(
+            actor,
+            this.draft.revisionId,
+            this.readyRevision === this.draft.revisionId,
+          );
+        })
+        .catch((e) => this.fail(e));
+    }
   }
   dispose(): void {
+    this.actions.dispose();
+    this.motion.bind(null);
     this.view.dispose();
   }
 }

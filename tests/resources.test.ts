@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { zipSync, strToU8 } from "fflate";
@@ -12,6 +12,10 @@ import {
 } from "../src/client/rendering/map/shared/scenePackage";
 import { normalizeRenderScheme } from "../src/client/rendering/map/shared/renderScheme";
 import { modelJson, revision, clip, testMap } from "./fixtures";
+import type { Performance } from "../src/shared/contracts";
+import type { SceneAction } from "../src/shared/sceneMotion";
+import { createActionTemplate } from "../src/shared/actionTemplates";
+import { actionInputs } from "../src/shared/actionBinding";
 let dir: string, store: Store;
 beforeEach(async () => {
   dir = await mkdtemp(path.join(os.tmpdir(), "lifetime-test-"));
@@ -26,6 +30,311 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 describe("independent resource storage", () => {
+  it("persists actor action references and map bindings without duplicating animation plans in Play", async () => {
+    let actor = await store.createActor("Reusable actor");
+    actor = await store.appendModel(actor.id, revision);
+    actor = await store.appendClip(actor.id, clip);
+    const template = createActionTemplate(
+      actor,
+      revision.id,
+      "visit",
+      clip.id,
+      [clip.id],
+    );
+    actor = await store.saveMotionAction(actor.id, {
+      ...template,
+      id: "visit",
+      name: template.plan.name,
+      prompt: "visit",
+      modelRevisionId: revision.id,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const source = actor.motionActions![0],
+      snapshot = structuredClone(actor);
+    const map = await store.saveMap({
+      name: testMap.name,
+      map: testMap,
+      scheme: null,
+    });
+    const draft: Performance = {
+      id: "bound-performance",
+      name: "show",
+      mapId: map.id,
+      updatedAt: 1,
+      instances: [
+        {
+          id: "one",
+          actorId: actor.id,
+          modelRevisionId: revision.id,
+          clipId: null,
+          position: [0, 0, 0],
+          rotation: 0,
+          scale: 1,
+          loop: false,
+          sceneMotion: {
+            schemaVersion: 2,
+            points: [
+              { id: "target", name: "p1", ground: [3, 0, 3], height: 0 },
+            ],
+            selectedActionId: "visit",
+            startPointId: null,
+            navigation: { radius: 0.3, height: 3, climb: 0.3, slope: 35 },
+            actions: [
+              {
+                id: "visit",
+                name: "Visit",
+                actorActionId: source.id,
+                actorActionUpdatedAt: source.updatedAt,
+                bindings: Object.fromEntries(
+                  actionInputs(source).map((slot) => [slot.id, "target"]),
+                ),
+              },
+            ],
+            machine: {
+              schemaVersion: 1,
+              enabled: true,
+              initialStateId: "visit",
+              states: [
+                {
+                  id: "visit",
+                  name: "Visit",
+                  actionId: "visit",
+                  repetitions: 1,
+                  waitSeconds: 0,
+                  nextStateId: "visit",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const saved = await store.savePerformance(draft),
+      loaded = await new Store(dir).get<Performance>("performances", draft.id);
+    expect(loaded).toEqual(saved);
+    expect(loaded.instances[0].sceneMotion!.actions[0]).not.toHaveProperty(
+      "plan",
+    );
+    expect(await store.get("actors", actor.id)).toEqual(snapshot);
+    const invalid = structuredClone(saved);
+    const bound = invalid.instances[0].sceneMotion!.actions[0];
+    if ("actorActionId" in bound) bound.actorActionId = "missing";
+    await expect(store.savePerformance(invalid)).rejects.toThrow(
+      "演员动作不存在",
+    );
+    expect(await store.get("performances", saved.id)).toEqual(saved);
+  });
+  it("round trips scene points and instance actions, rejects broken edits atomically", async () => {
+    let actor = await store.createActor("Scene actor");
+    actor = await store.appendModel(actor.id, revision);
+    actor = await store.appendClip(actor.id, clip);
+    const source = structuredClone(actor);
+    const map = await store.saveMap({
+      name: testMap.name,
+      map: testMap,
+      scheme: null,
+    });
+    const draft: Performance = {
+      id: "scene-performance",
+      name: "Scene",
+      mapId: map.id,
+      updatedAt: 1,
+      instances: [
+        {
+          id: "one",
+          actorId: actor.id,
+          modelRevisionId: revision.id,
+          clipId: null,
+          position: [0, 0, 0],
+          rotation: 0,
+          scale: 1,
+          loop: false,
+          sceneMotion: {
+            schemaVersion: 1,
+            points: [
+              { id: "p1", name: "p1", ground: [3, 0, 0], height: 0 },
+              { id: "p2", name: "p2", ground: null, height: 0 },
+            ],
+            navigation: { radius: 0.3, height: 3, climb: 0.3, slope: 35 },
+            startPointId: null,
+            selectedActionId: "action",
+            actions: [
+              {
+                id: "action",
+                name: "move and pose",
+                plan: {
+                  schemaVersion: 2,
+                  name: "move and pose",
+                  modelRevisionId: revision.id,
+                  steps: [
+                    {
+                      id: "move",
+                      type: "moveTo",
+                      destination: { point: "p1" },
+                      speed: 2,
+                      path: { mode: "ground" },
+                      animation: { clipId: clip.id, repeat: "untilArrival" },
+                    },
+                    {
+                      id: "pose",
+                      type: "playClip",
+                      animation: { clipId: clip.id, rate: 2, repeat: 1 },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    draft.instances[0].sceneMotion!.machine = {
+      schemaVersion: 1,
+      enabled: true,
+      initialStateId: "patrol",
+      states: [
+        {
+          id: "patrol",
+          name: "巡游",
+          actionId: "action",
+          repetitions: 2,
+          waitSeconds: 1,
+          nextStateId: "patrol",
+        },
+      ],
+    };
+    const saved = await store.savePerformance(draft),
+      loaded = await new Store(dir).get<Performance>("performances", draft.id);
+    expect(loaded).toEqual(saved);
+    expect(await store.get("actors", actor.id)).toEqual(source);
+    const brokenState = structuredClone(saved);
+    brokenState.instances[0].sceneMotion!.machine!.states[0].nextStateId =
+      "missing";
+    await expect(store.savePerformance(brokenState)).rejects.toThrow(
+      "后续状态",
+    );
+    brokenState.instances[0].sceneMotion!.machine!.states[0].nextStateId = null;
+    brokenState.instances[0].sceneMotion!.actions = [];
+    brokenState.instances[0].sceneMotion!.selectedActionId = null;
+    await expect(store.savePerformance(brokenState)).rejects.toThrow(
+      "角色状态",
+    );
+    const invalid = structuredClone(saved);
+    invalid.instances[0].sceneMotion!.points[0].ground = [30, 0, 0];
+    await expect(store.savePerformance(invalid)).rejects.toThrow();
+    invalid.instances[0].sceneMotion!.points[0].ground = [3, 0, 0];
+    (
+      invalid.instances[0].sceneMotion!.actions[0] as SceneAction
+    ).plan.steps[1] = {
+      id: "pose",
+      type: "playClip",
+      animation: { clipId: "missing" },
+    };
+    await expect(store.savePerformance(invalid)).rejects.toThrow();
+    expect(await store.get<Performance>("performances", draft.id)).toEqual(
+      saved,
+    );
+  });
+  it("reads legacy pools without loss and round trips new actions separately", async () => {
+    let actor = await store.createActor("Legacy");
+    await store.appendModel(actor.id, revision);
+    actor = await store.appendClip(actor.id, clip);
+    const pool = {
+      id: "old-pool",
+      name: "Legacy pool",
+      createdAt: 123,
+      modelRevisionId: revision.id,
+      clipIds: [clip.id],
+    };
+    delete actor.pools;
+    delete actor.motionActions;
+    actor.actions = [pool];
+    await writeFile(
+      path.join(dir, "actors", actor.id + ".json"),
+      JSON.stringify(actor),
+    );
+    actor = await store.get<typeof actor>("actors", actor.id);
+    expect(actor.pools).toEqual([pool]);
+    expect(actor.motionActions).toEqual([]);
+    const plan = {
+      schemaVersion: 1 as const,
+      name: "Go",
+      modelRevisionId: revision.id,
+      poolId: pool.id,
+      steps: [
+        { id: "play", type: "playClip" as const, animation: { slot: "clip1" } },
+      ],
+    };
+    actor = await store.saveMotionAction(actor.id, {
+      id: "new-action",
+      name: "Go",
+      modelRevisionId: revision.id,
+      createdAt: 0,
+      updatedAt: 0,
+      prompt: "wave",
+      plan,
+    });
+    const loaded = await new Store(dir).get<typeof actor>("actors", actor.id);
+    expect(loaded.pools).toEqual([pool]);
+    expect(loaded.actions).toEqual([pool]);
+    expect(loaded.motionActions?.[0].plan).toEqual(plan);
+    await expect(
+      store.saveAction(actor.id, {
+        ...pool,
+        entries: [
+          {
+            slot: "renamed",
+            clipId: clip.id,
+            segments: [{ name: "full", start: 0, end: 2, loop: true }],
+          },
+        ],
+      }),
+    ).rejects.toThrow("动画不存在");
+    const after = await store.get<typeof actor>("actors", actor.id);
+    expect(after.pools).toEqual([pool]);
+  });
+
+  it("persists action pools and rejects cross-version or duplicate clips", async () => {
+    const actor = await store.createActor("Pool actor");
+    await store.appendModel(actor.id, revision);
+    await store.appendModel(actor.id, { ...revision, id: "other-model" });
+    await store.appendClip(actor.id, clip);
+    const action = {
+      id: "action-test",
+      name: "Walk and flip",
+      createdAt: 0,
+      modelRevisionId: revision.id,
+      clipIds: [clip.id],
+    };
+    await store.saveAction(actor.id, action);
+    await store.renameActor(actor.id, "Renamed");
+    const updated = await store.saveAction(actor.id, {
+      ...action,
+      name: "Updated",
+    });
+    expect(updated.actions).toHaveLength(1);
+    const loaded = await new Store(dir).get<typeof actor>("actors", actor.id);
+    expect(loaded.actions?.[0].name).toBe("Updated");
+    expect(loaded.actions?.[0].clipIds).toEqual([clip.id]);
+    await expect(
+      store.saveAction(actor.id, { ...action, clipIds: [] }),
+    ).rejects.toThrow("动作池");
+    await expect(
+      store.saveAction(actor.id, { ...action, clipIds: [clip.id, clip.id] }),
+    ).rejects.toThrow("动作池");
+    await expect(
+      store.saveAction(actor.id, {
+        ...action,
+        id: "other",
+        modelRevisionId: "other-model",
+      }),
+    ).rejects.toThrow("动作池");
+    await expect(
+      store.saveAction(actor.id, { ...action, clipIds: ["missing"] }),
+    ).rejects.toThrow("动作池");
+  });
+
   it("rejects incomplete documents rather than silently creating an empty map", () => {
     expect(() =>
       decodeMapFile(

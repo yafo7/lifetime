@@ -1,6 +1,14 @@
 import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: { dedupe: ["three"] },
+  worker: { format: "es" },
+  optimizeDeps: {
+    exclude: [
+      "recast-navigation",
+      "@recast-navigation/core",
+      "@recast-navigation/wasm",
+    ],
+  },
   server: {
     port: 5190,
     strictPort: true,

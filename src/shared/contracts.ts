@@ -1,3 +1,4 @@
+import type { PoolEntry, SavedAction } from "./motion";
 export type Provider = "gpt" | "deepseek";
 export interface ModelRevision {
   id: string;
@@ -21,12 +22,24 @@ export interface AnimationClip {
   duration: number;
   metadata?: unknown;
 }
+export interface ActionPool {
+  id: string;
+  name: string;
+  createdAt: number;
+  modelRevisionId: string;
+  clipIds: string[];
+  entries?: PoolEntry[];
+}
 export interface Actor {
   id: string;
   name: string;
   updatedAt: number;
   modelRevisions: ModelRevision[];
   animations: AnimationClip[];
+  /** Legacy pool field, retained for lossless migration. */
+  actions?: ActionPool[];
+  pools?: ActionPool[];
+  motionActions?: SavedAction[];
 }
 export interface ActorInstance {
   id: string;
@@ -37,6 +50,7 @@ export interface ActorInstance {
   rotation: number;
   scale: number;
   loop: boolean;
+  sceneMotion?: import("./sceneMotion").SceneMotion;
 }
 export interface Performance {
   id: string;

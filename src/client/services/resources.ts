@@ -1,5 +1,7 @@
+import type { SavedAction } from "../../shared/motion";
 import type {
   Actor,
+  ActionPool,
   ModelRevision,
   AnimationClip,
   Performance,
@@ -32,6 +34,12 @@ export const resources = {
     request<Actor>(`/actors/${id}/models`, json("POST", revision)),
   clip: (id: string, clip: AnimationClip) =>
     request<Actor>(`/actors/${id}/clips`, json("POST", clip)),
+  saveAction: (id: string, action: ActionPool) =>
+    request<Actor>(`/actors/${id}/actions`, json("POST", action)),
+  savePool: (id: string, pool: ActionPool) =>
+    request<Actor>(`/actors/${id}/pools`, json("POST", pool)),
+  saveMotionAction: (id: string, action: SavedAction) =>
+    request<Actor>(`/actors/${id}/motion-actions`, json("POST", action)),
   map: (id: string) => request<MapResource>(`/maps/${id}`),
   importMap: (file: File, mapId?: string) =>
     request<MapResource>(`/maps${mapId ? `?mapId=${mapId}` : ""}`, {

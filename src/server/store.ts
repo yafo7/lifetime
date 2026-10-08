@@ -1,8 +1,10 @@
+import { validateSceneMotion } from "../shared/sceneMotion";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   Actor,
+  ActionPool,
   AnimationClip,
   ModelRevision,
   Performance,
@@ -11,6 +13,16 @@ import type {
 import type { MapResource } from "../shared/maps";
 import { validateActorModel } from "../client/rendering/map/shared/actorModel";
 import { decodeAnimation } from "../shared/animation";
+
+import {
+  validateAction,
+  validatePoints,
+  validateDocument,
+  validateAnimationReferences,
+  promptText,
+  validatePool,
+  type SavedAction,
+} from "../shared/motion";
 
 export type Collection = "actors" | "maps" | "performances";
 export class Store {
@@ -22,7 +34,12 @@ export class Store {
   }
   async get<T>(kind: Collection, id: string): Promise<T> {
     try {
-      return JSON.parse(await readFile(this.file(kind, id), "utf8")) as T;
+      const value = JSON.parse(await readFile(this.file(kind, id), "utf8"));
+      if (kind === "actors") {
+        value.pools ??= structuredClone(value.actions ?? []);
+        value.motionActions ??= [];
+      }
+      return value as T;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT")
         throw new Error("资源不存在");
@@ -110,6 +127,99 @@ export class Store {
       return this.write("actors", id, actor);
     });
   }
+  saveAction(id: string, action: ActionPool): Promise<Actor> {
+    return this.transaction(async () => {
+      const actor = await this.get<Actor>("actors", id);
+      this.file("actors", action.id);
+      const name = requiredName(action.name);
+      if (!actor.modelRevisions.some((r) => r.id === action.modelRevisionId))
+        throw new Error("动作必须绑定已有模型版本");
+      if (
+        !Array.isArray(action.clipIds) ||
+        !action.clipIds.length ||
+        action.clipIds.length > 100 ||
+        new Set(action.clipIds).size !== action.clipIds.length ||
+        !action.clipIds.every((id) =>
+          actor.animations.some(
+            (c) => c.id === id && c.modelRevisionId === action.modelRevisionId,
+          ),
+        )
+      )
+        throw new Error("动作池只能使用当前模型版本的动画，且不能为空或重复");
+      const actions = (actor.pools ??= []);
+      const old = actions.find((a) => a.id === action.id);
+      if (old && old.modelRevisionId !== action.modelRevisionId)
+        throw new Error("不能改变动作的模型版本");
+      const value: ActionPool = {
+        id: action.id,
+        name,
+        modelRevisionId: action.modelRevisionId,
+        clipIds: [...action.clipIds],
+        ...(action.entries ? { entries: structuredClone(action.entries) } : {}),
+        createdAt: old?.createdAt ?? Date.now(),
+      };
+      validatePool(value, actor);
+      if (old) actions[actions.indexOf(old)] = value;
+      else actions.push(value);
+      // Keep legacy readers working without losing the original pool IDs.
+      actor.actions = structuredClone(actions);
+      for (const saved of actor.motionActions ?? [])
+        if (saved.plan.poolId === value.id)
+          validateAction(saved.plan, { actor, pool: value });
+      actor.updatedAt = Date.now();
+      return this.write("actors", id, actor);
+    });
+  }
+  saveMotionAction(id: string, input: SavedAction): Promise<Actor> {
+    return this.transaction(async () => {
+      const actor = await this.get<Actor>("actors", id);
+      this.file("actors", input.id);
+      const pool = actor.pools?.find((p) => p.id === input.plan?.poolId);
+      if (input.plan?.schemaVersion === 1 && !pool)
+        throw new Error("旧动作的动画资源配置不存在");
+      const points = input.points ?? [];
+      validatePoints(points);
+      const document = input.document ?? [
+        {
+          type: "text" as const,
+          text: typeof input.prompt === "string" ? input.prompt : "",
+        },
+      ];
+      const context = {
+        actor,
+        modelRevisionId: input.plan?.modelRevisionId,
+        points,
+        pool: input.plan?.schemaVersion === 1 ? pool : undefined,
+      };
+      validateDocument(document, points, context);
+      const plan = validateAction(input.plan, {
+        actor,
+        pool: input.plan?.schemaVersion === 1 ? pool : undefined,
+        modelRevisionId: input.plan?.modelRevisionId,
+        points,
+      });
+      validateAnimationReferences(document, plan, context);
+      const list = (actor.motionActions ??= []),
+        old = list.find((a) => a.id === input.id);
+      if (old && old.modelRevisionId !== plan.modelRevisionId)
+        throw new Error("不能改变动作的模型版本");
+      const value: SavedAction = {
+        id: input.id,
+        name: plan.name,
+        modelRevisionId: plan.modelRevisionId,
+        createdAt: old?.createdAt ?? Date.now(),
+        updatedAt: Math.max(Date.now(), (old?.updatedAt ?? 0) + 1),
+        prompt: promptText(document, points, context),
+        document: structuredClone(document),
+        points: structuredClone(points),
+        plan,
+      };
+      if (old) list[list.indexOf(old)] = value;
+      else list.push(value);
+      actor.updatedAt = Date.now();
+      return this.write("actors", id, actor);
+    });
+  }
   saveMap(
     resource: Omit<MapResource, "id" | "updatedAt">,
   ): Promise<MapResource> {
@@ -122,7 +232,7 @@ export class Store {
     return this.transaction(async () => {
       this.file("performances", draft.id);
       requiredName(draft.name);
-      await this.get("maps", draft.mapId);
+      const map = await this.get<MapResource>("maps", draft.mapId);
       if (!Array.isArray(draft.instances) || draft.instances.length > 100)
         throw new Error("演员实例数量无效");
       const ids = new Set<string>();
@@ -151,6 +261,8 @@ export class Store {
           )
         )
           throw new Error("动画与演员模型版本不匹配");
+        if (item.sceneMotion !== undefined)
+          validateSceneMotion(item.sceneMotion, actor, item, map.map);
       }
       return this.write("performances", draft.id, {
         ...draft,
