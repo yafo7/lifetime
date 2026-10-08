@@ -11,6 +11,22 @@ import { resources } from "../services/resources";
 import { Viewport } from "../rendering/viewport";
 import { escape, select, button } from "../ui";
 import { message } from "../services/jobs";
+import { SceneBuildCoordinator } from "../scene/buildCoordinator";
+import { SceneRequestPanel } from "./sceneRequestPanel";
+import { sceneCatalogue, type SceneCatalogue } from "../../shared/scenePlan";
+import { buildSemanticIndex } from "../navigation/semanticIndex";
+
+declare global {
+  interface Window {
+    lifetimeSceneBuilder: {
+      getCatalogue(): Promise<SceneCatalogue>;
+      generate(request: string): Promise<void>;
+      build(plan: unknown, request?: string): Promise<void>;
+      getBuildState(): ReturnType<PlayWorkspace["buildState"]>;
+      cancel(): void;
+    };
+  }
+}
 
 export class PlayWorkspace {
   private view: Viewport;
@@ -26,6 +42,14 @@ export class PlayWorkspace {
   private loading = false;
   private libraryVersion = 0;
   private dirtyDrafts = new Set<string>();
+  private sceneCoordinator = new SceneBuildCoordinator();
+  private sceneRequest: SceneRequestPanel;
+  buildState() {
+    return structuredClone(this.sceneCoordinator.record);
+  }
+  get busy() {
+    return this.sceneCoordinator.busy;
+  }
   get dirty(): boolean {
     return this.dirtyDrafts.size > 0;
   }
@@ -101,6 +125,7 @@ export class PlayWorkspace {
           </div>
         </section>
         <aside class="lifetime-panel play-cast-panel">
+          <div data-scene-request-panel class="scene-request-panel"></div>
           <div class="panel-heading">
             <h2>演出演员</h2>
             <span class="muted" data-count>0</span>
@@ -140,6 +165,25 @@ export class PlayWorkspace {
     this.view = new Viewport(select(host, "[data-canvas]"));
     this.motion = new SceneMotionPort(this.view);
     window.lifetimeSceneMotion = this.motion;
+    this.sceneRequest = new SceneRequestPanel(
+      select(host, "[data-scene-request-panel]"),
+      this.sceneCoordinator,
+      (request, climb, retry) => this.generateScene(request, climb, retry),
+      async (id) => {
+        const p = await resources.performance(id);
+        await this.exclusive(() => this.open(p.mapId, p));
+      },
+      this.notify,
+    );
+    this.sceneCoordinator.onChange = () => this.sceneRequest.render();
+    window.lifetimeSceneBuilder = {
+      getCatalogue: () => this.getSceneCatalogue(),
+      generate: (request) => this.generateScene(request),
+      build: (plan, request = "结构化场景计划") =>
+        this.generateScene(request, 0.3, false, plan),
+      getBuildState: () => this.buildState(),
+      cancel: () => this.sceneCoordinator.cancel(),
+    };
     this.actionPanel = new SceneBindingPanel(
       select(host, "[data-scene-action-panel]"),
       select(host, "[data-canvas]"),
@@ -446,7 +490,62 @@ export class PlayWorkspace {
     select<HTMLButtonElement>(this.host, "[data-save]").disabled = false;
     this.renderInstances();
     this.updateDirty();
+    this.sceneRequest.setEnabled(true);
     await this.refreshActors();
+  }
+  private async getSceneActors() {
+    const summaries = await resources.list("actors");
+    return new Map(
+      (await Promise.all(summaries.map((s) => resources.actor(s.id)))).map(
+        (a) => [a.id, a],
+      ),
+    );
+  }
+  private async getSceneCatalogue() {
+    if (!this.map || !this.draft) throw new Error("请先打开地图");
+    return sceneCatalogue(
+      buildSemanticIndex(this.map).summary,
+      [...(await this.getSceneActors()).values()],
+      this.draft.instances,
+    );
+  }
+  private async generateScene(
+    request: string,
+    climb = 0.3,
+    retry = false,
+    plan?: unknown,
+  ) {
+    if (!this.map || !this.draft) throw new Error("请先打开地图");
+    if (this.loading) throw new Error("正在载入地图，请稍候");
+    const map = this.map,
+      base = structuredClone(this.draft),
+      signature = JSON.stringify(base);
+    const current = () =>
+      this.map === map && JSON.stringify(this.draft) === signature;
+    const actors = await this.getSceneActors();
+    if (!current()) throw new Error("演出已修改，请重新提交要求");
+    const result = await this.sceneCoordinator.run(
+      request,
+      {
+        map,
+        base,
+        actors,
+        current,
+        climb,
+        geometry: () => this.motion.getGeometry(),
+        navigation: (p) => this.motion.getNavigation(p),
+      },
+      retry,
+      plan,
+    );
+    await this.refreshPerformances();
+    const opened = current();
+    if (opened) await this.exclusive(() => this.open(result.mapId, result));
+    this.notify(
+      opened
+        ? "场景已生成并保存，可以播放"
+        : "场景已保存到演出库，当前草稿保持不变",
+    );
   }
   private async addActor(): Promise<void> {
     if (!this.draft || !this.libraryActor)
@@ -586,6 +685,26 @@ export class PlayWorkspace {
     this.renderInstances();
   }
   private markDirty(): void {
+    const design = this.draft?.sceneDesign;
+    if (design) {
+      // Removing a binding/instance retires only that role's automatic baseline.
+      // Position and state edits keep it, allowing the next plan to preserve P edits.
+      design.roles = design.roles.filter((r) => {
+        const instance = this.draft!.instances.find(
+          (i) => i.id === r.instanceId,
+        );
+        return (
+          instance?.sceneMotion &&
+          Object.values(r.actions).every((id) =>
+            instance.sceneMotion!.actions.some((a) => a.id === id),
+          )
+        );
+      });
+      design.plan.actors = design.plan.actors.filter((p) =>
+        design.roles.some((r) => r.key === p.key),
+      );
+      if (!design.roles.length) delete this.draft!.sceneDesign;
+    }
     if (this.draft) this.dirtyDrafts.add(this.draft.id);
     this.updateDirty();
   }
@@ -607,8 +726,10 @@ export class PlayWorkspace {
     for (const id of this.actors.keys())
       this.actors.set(id, await resources.actor(id));
     this.renderInstances();
+    await this.refreshPerformances();
   }
   dispose(): void {
+    this.sceneCoordinator.cancel();
     this.actionPanel.dispose();
     this.motion.dispose();
     this.view.dispose();

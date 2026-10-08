@@ -1,4 +1,5 @@
 import { validateSceneMotion } from "../shared/sceneMotion";
+import { validateSceneDesign } from "../shared/sceneDesign";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -236,6 +237,7 @@ export class Store {
       if (!Array.isArray(draft.instances) || draft.instances.length > 100)
         throw new Error("演员实例数量无效");
       const ids = new Set<string>();
+      const sceneActors: Actor[] = [];
       for (const item of draft.instances) {
         if (!item.id || ids.has(item.id)) throw new Error("演员实例 ID 重复");
         ids.add(item.id);
@@ -250,6 +252,8 @@ export class Store {
         )
           throw new Error("演员实例变换无效");
         const actor = await this.get<Actor>("actors", item.actorId);
+        if (!sceneActors.some((a) => a.id === actor.id))
+          sceneActors.push(actor);
         if (!actor.modelRevisions.some((r) => r.id === item.modelRevisionId))
           throw new Error("演员实例引用不存在的模型版本");
         if (
@@ -264,6 +268,8 @@ export class Store {
         if (item.sceneMotion !== undefined)
           validateSceneMotion(item.sceneMotion, actor, item, map.map);
       }
+      if (draft.sceneDesign !== undefined)
+        validateSceneDesign(draft.sceneDesign, draft, sceneActors, map);
       return this.write("performances", draft.id, {
         ...draft,
         updatedAt: Date.now(),

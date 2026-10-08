@@ -58,6 +58,7 @@ export interface Performance {
   mapId: string;
   instances: ActorInstance[];
   updatedAt: number;
+  sceneDesign?: import("./scenePlan").SceneDesign;
 }
 export interface ResourceSummary {
   id: string;

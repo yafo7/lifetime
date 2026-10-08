@@ -149,6 +149,10 @@ export class SceneMotionPort {
     await item.ready;
     return item.nav;
   }
+  /** Shared local navigation boundary for semantic placement; never sent to the planner. */
+  getNavigation(profile: NavigationProfile) {
+    return this.navigation(profile);
+  }
   async prepareAction(
     instanceId: string,
     actionId?: string,

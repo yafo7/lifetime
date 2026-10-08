@@ -1299,3 +1299,19 @@ p {
 .character-state-card .transform-grid {
   grid-template-columns: 1fr 1fr;
 }
+.scene-request-panel {
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border, #dbe4dc);
+}
+.scene-request-panel details {
+  margin: 10px 0;
+}
+.scene-request-panel textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+.scene-request-panel .toolbar-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}

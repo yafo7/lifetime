@@ -84,3 +84,9 @@
 `services/sceneMotionPort.ts` 统一准备、执行、暂停、取消、结构化配置与事件，每实例一套 `MotionRuntime`。环境适配器负责地面路线；执行器只维护确定性时间、位姿和片段。原地动画保留根位移与整圈旋转，移动段去掉重复水平根位移。`navigation/actionClearance.ts` 以独立模型采样原地动作包围盒，提前拒绝明显的障碍重叠；不求解身体接触或修复源动画。
 
 演出只保存源资源引用、设计位姿与可编辑配置；运行轨迹、执行进度、NavMesh 为临时状态。保存重开重新解析锚点并计算路线。完整接口与限制见 [scene-motion.md](scene-motion.md)。
+
+## 场景意图规划与本地装配
+
+第三步当前先用已有素材形成完整链路。`navigation/semanticIndex.ts` 从地图提取小型语义目录，完整几何、坐标与表面查询留在本地；`scene/planner.ts` 用一次 chat 生成 `shared/scenePlan.ts` 意图文档。`navigation/locationResolver.ts` 使用真实地图几何与角色通行能力自动放置 P 点；`scene/actionCompiler.ts` 创建演员层完整动作及空间输入，`scene/performanceAssembler.ts` 在 Play 绑定实际点位、装配状态并验证完整路径、表演空间和后续状态衔接。
+
+`scene/buildCoordinator.ts` 负责记录、取消和续存；动作分项保存，演出最后以新 ID 保存。`Performance.sceneDesign` 保存逻辑意图、实例 ID、输入映射和原始自动点快照，便于复用动作及保留手动 P 点修改。保存前独立校验规划元数据。UI 和外部规划器共用 `window.lifetimeSceneBuilder`；运行中的 NPC 仍是本地状态机。缺失素材的自动生成队列尚未接入，当前明确报错。接口、恢复条件及局限见 [scene-planning.md](scene-planning.md)。

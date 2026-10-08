@@ -16,17 +16,21 @@ await copyFile(
   "data/maps/139a63d1-44bf-4bbf-a2f4-b5e705e3ad36.json",
   path.join(dir, "data/maps/139a63d1-44bf-4bbf-a2f4-b5e705e3ad36.json"),
 );
-const demo = "2d833328-fe63-40de-90af-ec6ad8871e6c.json";
-if (
-  await access(`data/performances/${demo}`).then(
-    () => true,
-    () => false,
+for (const demo of [
+  "2d833328-fe63-40de-90af-ec6ad8871e6c.json",
+  "71105764-0a3b-469a-b506-6a451747b0aa.json",
+]) {
+  if (
+    await access(`data/performances/${demo}`).then(
+      () => true,
+      () => false,
+    )
   )
-)
-  await copyFile(
-    `data/performances/${demo}`,
-    path.join(dir, "data/performances", demo),
-  );
+    await copyFile(
+      `data/performances/${demo}`,
+      path.join(dir, "data/performances", demo),
+    );
+}
 await build({
   build: { outDir: path.join(dir, "dist") },
   define: {

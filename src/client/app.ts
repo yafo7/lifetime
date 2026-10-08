@@ -49,8 +49,9 @@ export async function startApp(host: HTMLElement): Promise<void> {
     const active = jobs.items.filter(
       (j) => j.state === "running" || j.state === "saving",
     );
-    select(host, "[data-task]").textContent = active.length
-      ? `${active.length} 个任务进行中`
+    const count = active.length + (play.busy ? 1 : 0);
+    select(host, "[data-task]").textContent = count
+      ? `${count} 个任务进行中`
       : jobs.items.some((j) => j.state === "save-failed")
         ? "有生成结果等待保存"
         : "无进行中的任务";
@@ -88,7 +89,7 @@ export async function startApp(host: HTMLElement): Promise<void> {
   );
   actors.setActive(true);
   window.addEventListener("beforeunload", (event) => {
-    if (jobs.busy || play.dirty) {
+    if (jobs.busy || play.busy || play.dirty) {
       event.preventDefault();
       event.returnValue = "";
     }
