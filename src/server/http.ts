@@ -11,11 +11,75 @@ import type {
   ModelRevision,
   Performance,
 } from "../shared/contracts";
+import { SceneGenerationService } from "./builds/service";
 
-export function createServer(store: Store, publicRoot?: string): http.Server {
-  return http.createServer(async (req, res) => {
+export function createServer(
+  store: Store,
+  publicRoot?: string,
+  builds = new SceneGenerationService(store),
+): http.Server {
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
+      if (
+        url.pathname === "/api/builds" ||
+        url.pathname.startsWith("/api/builds/")
+      ) {
+        const origin = req.headers.origin;
+        if (
+          origin &&
+          !["localhost", "127.0.0.1", "[::1]"].includes(
+            new URL(origin).hostname,
+          )
+        ) {
+          res.writeHead(403).end();
+          return;
+        }
+        const [, , , id, action] = url.pathname.split("/");
+        let value: unknown;
+        if (req.method === "GET")
+          value = id
+            ? await builds.get(id)
+            : await builds.list(
+                url.searchParams.get("mapId") ?? undefined,
+                url.searchParams.get("purpose") ?? undefined,
+              );
+        else if (req.method === "POST") {
+          const body = JSON.parse((await readBody(req)).toString("utf8"));
+          if (id === "traversal" && !action)
+            value = await builds.createTraversal(body);
+          else if (!id) value = await builds.create(body);
+          else if (action === "retry")
+            value = await builds.retry(id, body.taskId);
+          else if (action === "cancel") value = await builds.cancel(id);
+          else if (action === "claim")
+            value = await builds.claim(id, body.owner, body.climb);
+          else if (action === "release")
+            value = await builds.release(id, body.token, body.error ?? "");
+          else if (action === "complete")
+            value = await builds.complete(id, body.token, body.performance);
+          else if (action === "checkpoint")
+            value = await builds.checkpoint(
+              id,
+              body.token,
+              body.expectedRevision,
+              body.draft,
+            );
+          else {
+            res.writeHead(404).end();
+            return;
+          }
+        } else {
+          res.writeHead(405).end();
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify(value));
+        return;
+      }
       if (!url.pathname.startsWith("/api/resources")) {
         if (!publicRoot || req.method !== "GET") {
           res.writeHead(404).end();
@@ -157,6 +221,8 @@ export function createServer(store: Store, publicRoot?: string): http.Server {
       );
     }
   });
+  server.on("close", () => builds.close());
+  return server;
 }
 async function readBody(req: http.IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];

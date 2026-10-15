@@ -13,6 +13,8 @@ export default defineConfig({
     port: 5190,
     strictPort: true,
     proxy: {
+      "/api/builds":
+        process.env.LIFETIME_RESOURCE_URL || "http://127.0.0.1:5191",
       "/api/resources":
         process.env.LIFETIME_RESOURCE_URL || "http://127.0.0.1:5191",
     },

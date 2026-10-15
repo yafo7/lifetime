@@ -1,6 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { Store } from "./store";
 import { createServer } from "./http";
+try {
+  process.loadEnvFile();
+} catch (e) {
+  if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+}
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const port = Number(process.env.PORT || 5191);
 createServer(new Store(`${root}/data`), `${root}/dist`).listen(

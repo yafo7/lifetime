@@ -6,6 +6,7 @@
 
 - `actors/workspace.ts`：演员选择、模型版本、生成表单、动画列表。生成请求捕获演员及模型版本；异步结果不会写入后来选中的演员。
 - `play/workspace.ts`：地图资源、独立演员实例、地图动作绑定、状态关系和演出草稿。新实例引用演员层完整动作与模型版本，不在 Play 制作动画步骤。
+- `play/npcBehaviorPanel.ts`：地图下的 NPC 状态网络与完整动作目录，直接读取实例配置及运行状态，选择只改变查看对象，不改写状态规则或中断播放。右侧 `characterMachinePanel.ts` 编辑状态关系，`sceneBindingPanel.ts` 编辑所选动作的地图输入；存储仍使用已有场景配置，历史版本不是 NPC 的父层级。
 - `services/generation.ts`：严格按 API reference 直接请求两个生成接口。模型流式接收 SSE，动画接收 JSON；完整保留返回数据，不扩写提示词、不编排、不自动重发。
 - `services/jobs.ts`：应用级任务，区分生成失败与保存失败。仅保存失败可重试同一个结果；重新生成必须由用户主动触发。
 - `services/resources.ts`：本项目资源 HTTP 客户端。
@@ -20,27 +21,26 @@
 
 ## 本地存储
 
-`src/server/http.ts` 只提供 `/api/resources` 和生产静态文件，不代理或调用生成后端。
+`src/server/http.ts` 提供 `/api/resources`、`/api/builds` 和生产静态文件。自动场景生成由本地持久化队列调用后端，Actors 手动生成继续由浏览器直接调用；共用 `src/generation/client.ts`，均不依赖 WorldForge。
 
-| 资源 | 主要接口 | 存储约束 |
-| --- | --- | --- |
-| 演员 | GET/POST `/actors`，GET/PATCH `/actors/:id` | 独立演员身份与名称 |
-| 模型 | POST `/actors/:id/models` | 追加不可变版本，重复保存同一结果幂等 |
-| 动画 | POST `/actors/:id/clips` | 校验模型版本和节点绑定，保留原始响应 |
-| 地图 | GET/POST `/maps`，GET `/maps/:id` | 导入形成独立快照，不引用原项目磁盘路径 |
-| 地图包 | GET `/maps/:id/export`、`/maps/:id/hdri` | 完整资源导出和本地 HDRI 读取 |
-| 演出 | GET `/performances`、GET/PUT `/performances/:id` | 地图资源 ID、演员模型版本、实例变换和播放设置 |
+| 资源   | 主要接口                                         | 存储约束                                      |
+| ------ | ------------------------------------------------ | --------------------------------------------- |
+| 演员   | GET/POST `/actors`，GET/PATCH `/actors/:id`      | 独立演员身份与名称                            |
+| 模型   | POST `/actors/:id/models`                        | 追加不可变版本，重复保存同一结果幂等          |
+| 动画   | POST `/actors/:id/clips`                         | 校验模型版本和节点绑定，保留原始响应          |
+| 地图   | GET/POST `/maps`，GET `/maps/:id`                | 导入形成独立快照，不引用原项目磁盘路径        |
+| 地图包 | GET `/maps/:id/export`、`/maps/:id/hdri`         | 完整资源导出和本地 HDRI 读取                  |
+| 演出   | GET `/performances`、GET/PUT `/performances/:id` | 地图资源 ID、演员模型版本、实例变换和播放设置 |
 
 `store.ts` 串行化修改并以临时文件加 rename 原子写入，避免多个生成请求完成时互相覆盖。`mapFiles.ts` 处理地图包版本、路径、解压大小、资产和环境贴图校验；`src/shared` 仅承载业务契约及共享校验。
 
 ## 接口来源与限制
 
-后端参考文档于 2026-09-24 实时读取，快照在 `api-reference-2026-09-24.md`。默认 GPT / VOXEL-PRO 和 GPT / QUICK，另提供文档中的 DeepSeek 和其他基础模式。UI 不暴露多阶段动画、合并、迁移、环境动作或其他新增工作流。
+后端参考文档于 2026-10-12 再次核对，快照在 `api-reference-2026-10-12.md`。默认 GPT / VOXEL-PRO 和 GPT / QUICK，自动生成的完整后空翻等可使用 PRO。UI 不暴露多阶段动画、合并、迁移、环境动作或其他新增工作流。
 
 当前演出支持独立实例的地图标点、静态 NavMesh 寻路和分段动作预览，没有导演系统、NPC agent 或自动环境融合。与旧项目的数据兼容范围是地图/渲染方案 JSON 和完整场景 ZIP，不迁移旧长动画和环境动作数据库。
 
 第二步在场景运动端口上增加简单角色状态机。`shared/characterMachine.ts` 负责规则与引用校验；`motion/characterMachine.ts` 按动作完成、重复次数、等待时间调度后续状态；`play/characterMachinePanel.ts` 编辑规则。地图几何、路径编译与动作空间检查仍由原场景端口负责，状态切换从实际位置继续。运行时每个实例独立，规则随演出保存；不保存运行时钟、不调用 chat、不引入 NPC agent。具体接口见 [character-machine.md](character-machine.md)。
-
 
 ## 动画库、标点与动作执行
 
@@ -59,7 +59,6 @@
 
 协议与边界见 [motion-api.md](motion-api.md)。
 
-
 ## 动作分段编辑
 
 - `actors/actionTimeline.ts` 显示各步骤的累计时间、动画和倍率，选中后编辑主动画或已有叠加层。界面负责表单，不维护另一套播放时钟。
@@ -67,7 +66,6 @@
 - 移动速度与动画倍率独立：保持移动速度时，循环动画播放到目标点；动画结束时到达则以单次片段时长决定移动耗时。原地动画按取段、倍率和次数计算时长，后续片段自动顺延。
 - 草稿缓存预览起点与朝向，重复预览从同一起点执行；应用编辑会清除旧播放快照。保存沿用现有动作资源协议，原始动画资源不被修改。
 - 普通动画库预览倍率仅控制当前预览，切换动画恢复 1×。卡槽编辑模块保留在 Actors，当前界面隐藏；Play 只绑定完整动作，不引用这个编辑组件。两层的完整动作进度条复用执行时钟。
-
 
 ## 动画卡槽解耦
 
@@ -87,6 +85,6 @@
 
 ## 场景意图规划与本地装配
 
-第三步当前先用已有素材形成完整链路。`navigation/semanticIndex.ts` 从地图提取小型语义目录，完整几何、坐标与表面查询留在本地；`scene/planner.ts` 用一次 chat 生成 `shared/scenePlan.ts` 意图文档。`navigation/locationResolver.ts` 使用真实地图几何与角色通行能力自动放置 P 点；`scene/actionCompiler.ts` 创建演员层完整动作及空间输入，`scene/performanceAssembler.ts` 在 Play 绑定实际点位、装配状态并验证完整路径、表演空间和后续状态衔接。
+`navigation/semanticIndex.ts` 从地图提取小型语义目录，完整几何、坐标与表面查询留在本地；`server/builds/planner.ts` 用一次 chat 生成 `shared/sceneBlueprint.ts` 指导文档，声明复用或生成素材。`server/builds/service.ts` 持久化并发生成、校验与保存，再通过真实素材映射解析为 `ScenePlan`。`navigation/locationResolver.ts` 使用真实地图几何与角色通行能力自动放置 P 点；`scene/actionCompiler.ts` 创建演员层完整动作及空间输入，`scene/performanceAssembler.ts` 在 Play 绑定实际点位、装配状态并验证完整路径、表演空间和后续状态衔接。
 
-`scene/buildCoordinator.ts` 负责记录、取消和续存；动作分项保存，演出最后以新 ID 保存。`Performance.sceneDesign` 保存逻辑意图、实例 ID、输入映射和原始自动点快照，便于复用动作及保留手动 P 点修改。保存前独立校验规划元数据。UI 和外部规划器共用 `window.lifetimeSceneBuilder`；运行中的 NPC 仍是本地状态机。缺失素材的自动生成队列尚未接入，当前明确报错。接口、恢复条件及局限见 [scene-planning.md](scene-planning.md)。
+`scene/generationCoordinator.ts` 观察本地任务、恢复和领取空间装配会话；`scene/buildCoordinator.ts` 负责空间装配记录、取消和续存。动作分项保存，完整演出最后以新 ID 发布。`Performance.sceneDesign` 保存逻辑意图、实例 ID、输入映射和原始自动点快照，便于复用动作及保留手动 P 点修改。保存前独立校验规划元数据。UI 和外部规划器共用 `window.lifetimeSceneBuilder`；运行中的 NPC 仍是本地状态机。自动生成接口、恢复条件及局限见 [scene-generation.md](scene-generation.md)，已有素材装配细节见 [scene-planning.md](scene-planning.md)。

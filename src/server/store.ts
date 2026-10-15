@@ -1,6 +1,6 @@
 import { validateSceneMotion } from "../shared/sceneMotion";
 import { validateSceneDesign } from "../shared/sceneDesign";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
@@ -14,6 +14,7 @@ import type {
 import type { MapResource } from "../shared/maps";
 import { validateActorModel } from "../client/rendering/map/shared/actorModel";
 import { decodeAnimation } from "../shared/animation";
+import { atomicWrite } from "./atomicWrite";
 
 import {
   validateAction,
@@ -29,6 +30,9 @@ export type Collection = "actors" | "maps" | "performances";
 export class Store {
   private pending: Promise<unknown> = Promise.resolve();
   constructor(private root: string) {}
+  get buildDirectory() {
+    return path.join(this.root, "builds");
+  }
   private file(kind: Collection, id: string): string {
     if (!/^[\w-]{1,100}$/.test(id)) throw new Error("无效资源 ID");
     return path.join(this.root, kind, `${id}.json`);
@@ -56,7 +60,12 @@ export class Store {
         .map((n) => this.get<ResourceSummary>(kind, n.slice(0, -5))),
     );
     return docs
-      .map(({ id, name, updatedAt }) => ({ id, name, updatedAt }))
+      .map(({ id, name, updatedAt, mapId }) => ({
+        id,
+        name,
+        updatedAt,
+        ...(kind === "performances" ? { mapId } : {}),
+      }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
   transaction<T>(work: () => Promise<T>): Promise<T> {
@@ -67,15 +76,18 @@ export class Store {
   private async write<T>(kind: Collection, id: string, value: T): Promise<T> {
     const file = this.file(kind, id);
     await mkdir(path.dirname(file), { recursive: true });
-    const temp = `${file}.${randomUUID()}.tmp`;
-    await writeFile(temp, JSON.stringify(value));
-    await rename(temp, file);
+    await atomicWrite(file, JSON.stringify(value));
     return value;
   }
-  createActor(name: string): Promise<Actor> {
-    return this.transaction(() => {
+  createActor(name: string, id: string = randomUUID()): Promise<Actor> {
+    return this.transaction(async () => {
+      try {
+        return await this.get<Actor>("actors", id);
+      } catch (e) {
+        if (!(e instanceof Error) || e.message !== "资源不存在") throw e;
+      }
       const actor: Actor = {
-        id: randomUUID(),
+        id,
         name: requiredName(name),
         updatedAt: Date.now(),
         modelRevisions: [],
@@ -229,47 +241,48 @@ export class Store {
       return this.write("maps", map.id, map);
     });
   }
+  async validatePerformance(draft: Performance): Promise<void> {
+    this.file("performances", draft.id);
+    requiredName(draft.name);
+    const map = await this.get<MapResource>("maps", draft.mapId);
+    if (!Array.isArray(draft.instances) || draft.instances.length > 100)
+      throw new Error("演员实例数量无效");
+    const ids = new Set<string>();
+    const sceneActors: Actor[] = [];
+    for (const item of draft.instances) {
+      if (!item.id || ids.has(item.id)) throw new Error("演员实例 ID 重复");
+      ids.add(item.id);
+      if (
+        !Array.isArray(item.position) ||
+        item.position.length !== 3 ||
+        !item.position.every(Number.isFinite) ||
+        !Number.isFinite(item.rotation) ||
+        !Number.isFinite(item.scale) ||
+        item.scale <= 0 ||
+        typeof item.loop !== "boolean"
+      )
+        throw new Error("演员实例变换无效");
+      const actor = await this.get<Actor>("actors", item.actorId);
+      if (!sceneActors.some((a) => a.id === actor.id)) sceneActors.push(actor);
+      if (!actor.modelRevisions.some((r) => r.id === item.modelRevisionId))
+        throw new Error("演员实例引用不存在的模型版本");
+      if (
+        item.clipId &&
+        !actor.animations.some(
+          (c) =>
+            c.id === item.clipId && c.modelRevisionId === item.modelRevisionId,
+        )
+      )
+        throw new Error("动画与演员模型版本不匹配");
+      if (item.sceneMotion !== undefined)
+        validateSceneMotion(item.sceneMotion, actor, item, map.map);
+    }
+    if (draft.sceneDesign !== undefined)
+      validateSceneDesign(draft.sceneDesign, draft, sceneActors, map);
+  }
   savePerformance(draft: Performance): Promise<Performance> {
     return this.transaction(async () => {
-      this.file("performances", draft.id);
-      requiredName(draft.name);
-      const map = await this.get<MapResource>("maps", draft.mapId);
-      if (!Array.isArray(draft.instances) || draft.instances.length > 100)
-        throw new Error("演员实例数量无效");
-      const ids = new Set<string>();
-      const sceneActors: Actor[] = [];
-      for (const item of draft.instances) {
-        if (!item.id || ids.has(item.id)) throw new Error("演员实例 ID 重复");
-        ids.add(item.id);
-        if (
-          !Array.isArray(item.position) ||
-          item.position.length !== 3 ||
-          !item.position.every(Number.isFinite) ||
-          !Number.isFinite(item.rotation) ||
-          !Number.isFinite(item.scale) ||
-          item.scale <= 0 ||
-          typeof item.loop !== "boolean"
-        )
-          throw new Error("演员实例变换无效");
-        const actor = await this.get<Actor>("actors", item.actorId);
-        if (!sceneActors.some((a) => a.id === actor.id))
-          sceneActors.push(actor);
-        if (!actor.modelRevisions.some((r) => r.id === item.modelRevisionId))
-          throw new Error("演员实例引用不存在的模型版本");
-        if (
-          item.clipId &&
-          !actor.animations.some(
-            (c) =>
-              c.id === item.clipId &&
-              c.modelRevisionId === item.modelRevisionId,
-          )
-        )
-          throw new Error("动画与演员模型版本不匹配");
-        if (item.sceneMotion !== undefined)
-          validateSceneMotion(item.sceneMotion, actor, item, map.map);
-      }
-      if (draft.sceneDesign !== undefined)
-        validateSceneDesign(draft.sceneDesign, draft, sceneActors, map);
+      await this.validatePerformance(draft);
       return this.write("performances", draft.id, {
         ...draft,
         updatedAt: Date.now(),

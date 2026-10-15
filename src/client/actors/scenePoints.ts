@@ -15,6 +15,8 @@ export class ScenePoints {
   private hint = document.createElement("div");
   private points: ActionPoint[] = [];
   private selected = "";
+  private deletionSelection = "";
+  private invalid = new Set<string>();
   private dragging = "";
   private armed = "";
   private enabled = false;
@@ -41,6 +43,7 @@ export class ScenePoints {
     private view: Viewport,
     private place: (id: string, point: ActionPoint) => void,
     private choose: (id: string) => void,
+    private remove?: (id: string) => void,
   ) {
     this.layer.className = "scene-points";
     this.hint.className = "point-placement-hint";
@@ -67,10 +70,17 @@ export class ScenePoints {
     this.view.onFrame = () => this.update();
     this.show(false);
   }
-  set(points: ActionPoint[], selected: string): void {
+  set(
+    points: ActionPoint[],
+    selected: string,
+    invalid = new Set<string>(),
+  ): void {
     this.cancelLift();
     this.points = points;
+    if (!points.some((p) => p.id === this.deletionSelection))
+      this.deletionSelection = "";
     this.selected = selected;
+    this.invalid = invalid;
     if (this.armed && !points.some((p) => p.id === this.armed)) this.armed = "";
     this.layer.replaceChildren();
     this.handles.clear();
@@ -87,7 +97,10 @@ export class ScenePoints {
         "aria-label",
         `地图标点 ${p.name}，${p.offsetMode === "normal" ? "离面距离" : "向上高度"} ${p.height}`,
       );
-      button.onclick = () => this.choose(p.id);
+      button.onclick = () => {
+        this.deletionSelection = p.id;
+        this.choose(p.id);
+      };
       button.ondragstart = (e) => {
         e.dataTransfer?.setData(POINT_MIME, p.id);
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
@@ -109,6 +122,7 @@ export class ScenePoints {
     this.enabled = enabled;
     this.layer.hidden = !enabled;
     if (!enabled) {
+      this.deletionSelection = "";
       this.cancelLift();
       this.armed = "";
       this.dragging = "";
@@ -117,6 +131,7 @@ export class ScenePoints {
     this.update();
   }
   beginDrag(id: string): void {
+    this.deletionSelection = id;
     this.dragging = id;
     this.selected = id;
     this.armed = "";
@@ -126,6 +141,9 @@ export class ScenePoints {
     this.armed = id;
     this.selected = id;
     this.update();
+  }
+  setRemovalHandler(remove?: (id: string) => void): void {
+    this.remove = remove;
   }
   private down = (e: PointerEvent) => {
     if (this.enabled && this.armed && e.button === 0)
@@ -164,6 +182,30 @@ export class ScenePoints {
     this.update();
   };
   private keydown = (e: KeyboardEvent) => {
+    const target = e.target instanceof Element ? e.target : null;
+    if (
+      e.key === "Delete" &&
+      !e.repeat &&
+      !e.defaultPrevented &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.shiftKey &&
+      this.enabled &&
+      this.remove &&
+      !this.dragging &&
+      !this.vertical &&
+      this.deletionSelection === this.selected &&
+      this.points.some((p) => p.id === this.deletionSelection) &&
+      !target?.closest(
+        'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+      )
+    ) {
+      e.preventDefault();
+      this.remove(this.selected);
+      this.deletionSelection = "";
+      return;
+    }
     if (e.key === "Escape") {
       this.cancelLift();
       this.armed = "";
@@ -257,8 +299,10 @@ export class ScenePoints {
           this.vertical?.original.id === p.id
             ? this.vertical.draft
             : this.view.resolvePoint(p);
-        h.button.classList.remove("invalid");
-        h.button.title = "拖动重新定位，点击选择";
+        h.button.classList.toggle("invalid", this.invalid.has(p.id));
+        h.button.title = this.invalid.has(p.id)
+          ? "此点待检查或需要调整，拖动重新定位"
+          : "拖动重新定位，点击选择";
       } catch (error) {
         resolved = p;
         h.button.classList.add("invalid");
@@ -280,7 +324,7 @@ export class ScenePoints {
       h.line.setAttribute("y1", String(a.y));
       h.line.setAttribute("x2", String(b.x));
       h.line.setAttribute("y2", String(b.y));
-      if (p.id === this.selected && !h.button.classList.contains("invalid")) {
+      if (p.id === this.selected) {
         this.lift.hidden = !a.visible;
         this.lift.style.left = `${a.x}px`;
         this.lift.style.top = `${a.y - 38}px`;

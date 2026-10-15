@@ -69,9 +69,9 @@ export class ActorsWorkspace {
             </aside>
           </details>
           <select data-revisions aria-label="模型版本"></select
-          ><span class="muted">/ 动画</span>
+          ><span class="muted" data-model-binding></span>
         </div>
-        <span class="lifetime-status-pill" data-status>准备就绪</span>
+        <span class="lifetime-status-pill" data-status hidden></span>
       </div>
       <div class="actors-layout">
         <aside class="lifetime-panel animation-library split-library">
@@ -87,9 +87,8 @@ export class ActorsWorkspace {
         <section class="actor-preview-column">
           <div class="actor-preview-card">
             <div class="actor-preview-toolbar">
-              <span>模型预览</span
-              ><button data-fit class="secondary small">重置视角</button
-              ><span class="preview-chip">MODEL PREVIEW · 自由视角</span>
+              <span>演员预览</span
+              ><button data-fit class="secondary small">重置视角</button>
             </div>
             <div class="actor-preview-stage">
               <canvas data-canvas aria-label="演员三维预览"></canvas>
@@ -97,12 +96,9 @@ export class ActorsWorkspace {
                 创建演员，然后生成模型
               </div>
             </div>
-            <div class="actor-preview-navigation">
-              左键旋转 · 右键平移 · 滚轮缩放
-            </div>
             <div class="playback-strip">
               <button data-play aria-label="播放动画" disabled>▶ 播放</button
-              ><button data-stop>停止</button
+              ><button data-stop>复位</button
               ><input
                 data-seek
                 type="range"
@@ -132,22 +128,15 @@ export class ActorsWorkspace {
           </div>
         </section>
         <aside class="lifetime-panel actor-controls-panel">
-          <div class="panel-heading">
-            <h2 data-editor-title>演员制作</h2>
-            <button data-back-actor class="small" hidden>返回演员制作</button>
+          <div class="name-row">
+            <input data-name aria-label="演员名称" placeholder="演员名称" />
+          </div>
+          <div class="panel-tabs">
+            <button data-tab="model" class="active">模型</button
+            ><button data-tab="animation">动画</button
+            ><button data-tab="action">动作</button>
           </div>
           <div data-actor-editor>
-            <div class="name-row">
-              <input
-                data-name
-                aria-label="演员名称"
-                placeholder="演员名称"
-              /><button data-rename class="secondary small">保存名称</button>
-            </div>
-            <div class="panel-tabs">
-              <button data-tab="model" class="active">模型制作</button
-              ><button data-tab="animation">动画制作</button>
-            </div>
             <div data-pane="model">
               <label class="lifetime-field"
                 ><span>模型描述</span
@@ -157,57 +146,32 @@ export class ActorsWorkspace {
                   placeholder="例如：一个穿旅行斗篷、背着小包的低多边形旅行者"
                 ></textarea>
               </label>
-              <div class="field-grid">
-                <label class="lifetime-field"
-                  ><span>Provider</span
-                  ><select data-model-provider>
-                    <option value="gpt">GPT</option>
-                    <option value="deepseek">DeepSeek</option>
-                  </select></label
-                ><label class="lifetime-field"
-                  ><span>生成模式</span
-                  ><select data-model-mode>
-                    ${["voxel-pro", "voxel", "standard", "lite", "curve", "wire", "math"].map((m) => `<option value="${m}">${m.toUpperCase()}</option>`).join("")}
-                  </select></label
-                >
-              </div>
+              <input data-model-provider type="hidden" value="gpt" /><input
+                data-model-mode
+                type="hidden"
+                value="voxel-pro"
+              />
               <button data-generate-model class="lifetime-primary">
                 生成模型
               </button>
-              <p class="lifetime-help">
-                生成结果保存为新版本，已有动画继续绑定原模型。
-              </p>
             </div>
             <div data-pane="animation" hidden>
               <label class="lifetime-field"
-                ><span>动作描述</span
+                ><span>动画描述</span
                 ><textarea
                   data-animation-prompt
                   rows="5"
                   placeholder="例如：站在原地，抬起右手挥手"
                 ></textarea>
               </label>
-              <div class="field-grid">
-                <label class="lifetime-field"
-                  ><span>Provider</span
-                  ><select data-animation-provider>
-                    <option value="gpt">GPT</option>
-                    <option value="deepseek">DeepSeek</option>
-                  </select></label
-                ><label class="lifetime-field"
-                  ><span>动画模式</span
-                  ><select data-animation-mode>
-                    <option value="quick">QUICK</option>
-                    <option value="pro">PRO</option>
-                  </select></label
-                >
-              </div>
+              <input data-animation-provider type="hidden" value="gpt" /><input
+                data-animation-mode
+                type="hidden"
+                value="quick"
+              />
               <button data-generate-animation class="lifetime-primary">
                 生成动画
               </button>
-              <p class="lifetime-help">
-                使用当前模型版本。动画时长由后端决定，生成后可直接播放。
-              </p>
             </div>
           </div>
           <div data-action-editor hidden></div>
@@ -249,13 +213,13 @@ export class ActorsWorkspace {
         `${this.view.playbackRate.toFixed(2)}×`;
       rate.disabled = !duration || this.view.isAction;
       select<HTMLElement>(host, "[data-rate-control]").hidden =
-        this.view.isAction || action.selected;
+        this.view.isAction || action.selected || !duration;
       select<HTMLInputElement>(host, "[data-loop]").disabled =
         this.view.isAction;
       select<HTMLInputElement>(host, "[data-loop]").closest<HTMLElement>(
         "label",
-      )!.hidden = action.selected;
-      select<HTMLElement>(host, "[data-stop]").hidden = action.selected;
+      )!.hidden = action.selected || !duration;
+      select<HTMLElement>(host, "[data-stop]").hidden = !duration;
       select(host, "[data-time]").textContent =
         `${time.toFixed(2)} / ${duration.toFixed(2)} 秒`;
       const play = select<HTMLButtonElement>(host, "[data-play]");
@@ -270,17 +234,25 @@ export class ActorsWorkspace {
       await this.loadLibrary();
       await this.chooseActor(actor.id);
     });
-    on("[data-rename]", async () => {
-      if (!this.actor) return;
-      this.actor = await resources.renameActor(
-        this.actor.id,
-        select<HTMLInputElement>(host, "[data-name]").value,
-      );
-      await this.loadLibrary();
-      select(host, "[data-current-actor]").textContent = this.actor.name;
-      this.notify("演员名称已保存");
-    });
-    on("[data-back-actor]", () => this.setEditor(false));
+    select<HTMLInputElement>(host, "[data-name]").onchange = () => {
+      const actor = this.actor;
+      if (!actor) return;
+      const name = select<HTMLInputElement>(host, "[data-name]").value.trim();
+      if (!name) {
+        select<HTMLInputElement>(host, "[data-name]").value = actor.name;
+        return;
+      }
+      void resources
+        .renameActor(actor.id, name)
+        .then(async (updated) => {
+          if (this.actor?.id === actor.id) {
+            this.actor = updated;
+            select(host, "[data-current-actor]").textContent = updated.name;
+          }
+          await this.loadLibrary();
+        })
+        .catch((e) => this.fail(e));
+    };
     on("[data-fit]", () => this.view.fit());
     on("[data-play]", () => {
       if (this.actions.playback.selected) this.actions.togglePlayback();
@@ -307,17 +279,13 @@ export class ActorsWorkspace {
       this.draft.clipId = "";
       void this.showModel().catch((e) => this.fail(e));
     };
-    host.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach(
-      (b) =>
-        (b.onclick = () => {
-          host
-            .querySelectorAll<HTMLElement>("[data-pane]")
-            .forEach((p) => (p.hidden = p.dataset.pane !== b.dataset.tab));
-          host
-            .querySelectorAll("[data-tab]")
-            .forEach((t) => t.classList.toggle("active", t === b));
-        }),
-    );
+    host
+      .querySelectorAll<HTMLButtonElement>("[data-tab]")
+      .forEach(
+        (b) =>
+          (b.onclick = () =>
+            this.setTab(b.dataset.tab as "model" | "animation" | "action")),
+      );
     select<HTMLInputElement>(host, "[data-search]").oninput = () => {
       const term = select<HTMLInputElement>(
         host,
@@ -334,14 +302,21 @@ export class ActorsWorkspace {
     this.renderJobs();
     this.actions.context(null, "");
   }
-  private setEditor(action: boolean): void {
-    this.actions.setVisible(action);
-    select<HTMLElement>(this.host, "[data-actor-editor]").hidden = action;
-    select<HTMLElement>(this.host, "[data-action-editor]").hidden = !action;
-    select<HTMLElement>(this.host, "[data-back-actor]").hidden = !action;
-    select(this.host, "[data-editor-title]").textContent = action
-      ? "动作制作"
-      : "演员制作";
+  private setEditor(action: boolean) {
+    this.setTab(action ? "action" : "animation");
+  }
+  private setTab(tab: "model" | "animation" | "action") {
+    this.actions.setVisible(tab === "action");
+    select<HTMLElement>(this.host, "[data-actor-editor]").hidden =
+      tab === "action";
+    select<HTMLElement>(this.host, "[data-action-editor]").hidden =
+      tab !== "action";
+    this.host
+      .querySelectorAll<HTMLElement>("[data-pane]")
+      .forEach((p) => (p.hidden = p.dataset.pane !== tab));
+    this.host
+      .querySelectorAll<HTMLElement>("[data-tab]")
+      .forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   }
   async start(): Promise<void> {
     const actors = await this.loadLibrary();
@@ -350,6 +325,7 @@ export class ActorsWorkspace {
   private fail(e: unknown): void {
     this.notify(message(e));
     select(this.host, "[data-status]").textContent = message(e);
+    select<HTMLElement>(this.host, "[data-status]").hidden = false;
   }
   private async loadLibrary() {
     const list = await resources.list("actors");
@@ -395,6 +371,7 @@ export class ActorsWorkspace {
     const actor = await resources.actor(id);
     if (version !== this.version) return;
     this.actor = actor;
+    select<HTMLElement>(this.host, "[data-status]").hidden = true;
     this.draft = this.drafts.get(id) ?? emptyDraft();
     this.drafts.set(id, this.draft);
     select(this.host, "[data-current-actor]").textContent = actor.name;
@@ -423,12 +400,14 @@ export class ActorsWorkspace {
     menu.innerHTML = revisions.length
       ? revisions
           .map(
-            (r, i) =>
-              `<option value="${escape(r.id)}">版本 ${i + 1} · ${escape(r.mode.toUpperCase())}</option>`,
+            (r, i) => `<option value="${escape(r.id)}">版本 ${i + 1}</option>`,
           )
           .join("")
       : '<option value="">尚无模型</option>';
     menu.value = this.draft.revisionId;
+    menu.hidden = revisions.length <= 1;
+    select(this.host, "[data-model-binding]").textContent =
+      revisions.length > 1 ? "动画绑定当前版本" : "";
   }
   private async showModel(): Promise<void> {
     const model = this.actor?.modelRevisions.find(
@@ -462,7 +441,7 @@ export class ActorsWorkspace {
       ? clips
           .map(
             (c) =>
-              `<button class="clip-item ${c.id === this.draft.clipId ? "active" : ""}" data-clip-id="${escape(c.id)}"><b>${escape(c.name)}</b><small>${c.duration.toFixed(2)} 秒 · ${escape(c.mode.toUpperCase())}</small></button>`,
+              `<button class="clip-item ${c.id === this.draft.clipId ? "active" : ""}" data-clip-id="${escape(c.id)}"><b>${escape(c.name)}</b><small>${c.duration.toFixed(2)} 秒</small></button>`,
           )
           .join("")
       : '<p class="empty-state">还没有动画。选择模型后，描述你想要的动作。</p>';
@@ -603,7 +582,7 @@ export class ActorsWorkspace {
   }
   renderJobs(): void {
     const jobs = this.jobs.items
-      .filter((j) => j.actorId === this.actor?.id)
+      .filter((j) => j.actorId === this.actor?.id && j.state !== "done")
       .slice()
       .reverse();
     select(this.host, "[data-jobs]").innerHTML = jobs
@@ -643,6 +622,7 @@ export class ActorsWorkspace {
     this.active = active;
     this.view.setActive(active);
     this.actions.setActive(active);
+    if (returning) void this.loadLibrary().catch((e) => this.fail(e));
     if (returning && this.actor) {
       const id = this.actor.id,
         version = this.version;

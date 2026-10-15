@@ -35,6 +35,7 @@ export interface SceneMotion {
   startPointId: string | null;
   navigation: NavigationProfile;
   machine?: CharacterMachine;
+  traversal?: import("./traversal").TraversalPolicy;
 }
 export function mapSpace(map: EditableMap): MotionSpace {
   const minY =
@@ -84,11 +85,31 @@ export function validateSceneMotion(
           "startPointId",
           "navigation",
           "machine",
+          "traversal",
         ].includes(k),
     )
   )
     throw new Error("场景动作配置无效");
   const n = value.navigation;
+  if (value.traversal !== undefined) {
+    const t = value.traversal;
+    if (
+      !t ||
+      typeof t.fly !== "boolean" ||
+      Object.keys(t).some(
+        (k) => !["fly", "jumpHeight", "jumpDistance"].includes(k),
+      ) ||
+      (t.jumpHeight !== undefined &&
+        (!Number.isFinite(t.jumpHeight) ||
+          t.jumpHeight < 0.2 ||
+          t.jumpHeight > 10)) ||
+      (t.jumpDistance !== undefined &&
+        (!Number.isFinite(t.jumpDistance) ||
+          t.jumpDistance < 0.2 ||
+          t.jumpDistance > 20))
+    )
+      throw new Error("跳跃或飞行能力无效");
+  }
   if (
     !n ||
     ![n.radius, n.height, n.climb, n.slope].every(Number.isFinite) ||
@@ -138,18 +159,17 @@ export function validateSceneMotion(
               "actorActionId",
               "actorActionUpdatedAt",
               "bindings",
+              "excludedRouteInputs",
             ].includes(k),
         ))
     )
       throw new Error("演员动作引用无效");
     const plan = sceneActionPlan(a, ctx, false);
     if (
-      plan.steps.some(
-        (s) =>
-          s.type === "moveTo" && (s.path?.mode === "air" || !!s.path?.height),
-      )
+      !value.traversal?.fly &&
+      plan.steps.some((s) => s.type === "moveTo" && s.path?.mode === "air")
     )
-      throw new Error("场景动作当前仅支持地面导航，请使用地面目标点");
+      throw new Error("此角色尚未开启飞行能力，请在 NPC 设置中开启");
     if (plan.start !== undefined) throw new Error("请通过场景起始站位指定起点");
   }
   if (value.selectedActionId !== null && !ids.has(value.selectedActionId))

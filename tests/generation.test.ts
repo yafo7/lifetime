@@ -86,6 +86,18 @@ describe("backend integration", () => {
     expect(body.duration).toBeUndefined();
     expect(body.emitParticles).toBe(false);
   });
+  it("treats truncated JSON model responses as unknown results without automatically retrying", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response('{"modelJson":', {
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    await expect(
+      generateModel("robot", "gpt", "voxel-pro", { fetcher }),
+    ).rejects.toMatchObject({ uncertain: true });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it("retries only persistence and retains the submitted owner after UI switches", async () => {
     const jobs = new Jobs(),
       generate = vi.fn(async () => ({ model: "original" })),

@@ -79,11 +79,19 @@ export function buildSemanticIndex(resource: MapResource): SemanticIndex {
       ? "bridge"
       : /树|松|柏|柳|tree/i.test(label)
         ? "tree"
-        : /厅|房|屋|亭|门|building|house|pavilion/i.test(label)
+        : /厅|房|屋|亭|门|楼|阁|廊|塔|building|house|pavilion|hall|tower|gate|gazebo/i.test(
+              label,
+            )
           ? "building"
           : "object";
     // Unknown props remain local; ornamental lights/rocks don't fill the planner context.
-    if (kind === "object") continue;
+    if (
+      kind === "object" &&
+      !/井|雕像|农田|田地|菜地|长椅|凳|座椅|围栏|篱笆|广场|观景台|well|statue|field|bench|fence|square|market/i.test(
+        label,
+      )
+    )
+      continue;
     const box = boxes.get(object.id);
     if (!box) continue;
     add({
@@ -92,8 +100,19 @@ export function buildSemanticIndex(resource: MapResource): SemanticIndex {
         name: object.name,
         kind,
         source: "name",
+        aliases: [
+          ...new Set(
+            [asset?.name, ...(asset?.tags ?? [])].filter(
+              (s): s is string => !!s && s !== object.name,
+            ),
+          ),
+        ]
+          .slice(0, 4)
+          .map((s) => s.slice(0, 80)),
         queries:
-          kind === "bridge" ? ["center", "near", "facing"] : ["near", "facing"],
+          kind === "bridge" || kind === "building"
+            ? ["center", "near", "facing"]
+            : ["near", "facing"],
         near: [],
       },
       objectId: object.id,
@@ -123,13 +142,38 @@ export function buildSemanticIndex(resource: MapResource): SemanticIndex {
   for (const f of features.values()) {
     if (f.semantic.kind === "ground") continue;
     const center = midpoint(f);
+    const column =
+        center[0] < -map.box.size[0] / 6
+          ? 0
+          : center[0] > map.box.size[0] / 6
+            ? 2
+            : 1,
+      row =
+        center[2] < -map.box.size[2] / 6
+          ? 0
+          : center[2] > map.box.size[2] / 6
+            ? 2
+            : 1;
+    f.semantic.sector = (
+      [
+        "northwest",
+        "north",
+        "northeast",
+        "west",
+        "center",
+        "east",
+        "southwest",
+        "south",
+        "southeast",
+      ] as const
+    )[row * 3 + column];
     f.semantic.near = [...features.values()]
       .filter((other) => other !== f && other.semantic.kind !== "ground")
       .map((other) => ({
         id: other.semantic.id,
         d: Math.hypot(
-          midpoint(other)[0] - center[0],
-          midpoint(other)[2] - center[2],
+          Math.max(0, other.min[0] - f.max[0], f.min[0] - other.max[0]),
+          Math.max(0, other.min[2] - f.max[2], f.min[2] - other.max[2]),
         ),
       }))
       .filter((v) => v.d < 25)
@@ -137,6 +181,12 @@ export function buildSemanticIndex(resource: MapResource): SemanticIndex {
       .slice(0, 4)
       .map((v) => v.id);
   }
+  const priority = (f: SpatialFeature) =>
+    f.semantic.kind === "tree" ? 3 : f.semantic.kind === "object" ? 2 : 1;
+  const listed = [...features.values()]
+      .sort((a, b) => priority(a) - priority(b))
+      .slice(0, 96),
+    listedIds = new Set(listed.map((f) => f.semantic.id));
   return {
     map,
     features,
@@ -144,7 +194,13 @@ export function buildSemanticIndex(resource: MapResource): SemanticIndex {
       mapId: resource.id,
       revision: resource.updatedAt,
       name: resource.name,
-      features: [...features.values()].map((f) => f.semantic),
+      features: listed.map((f) => ({
+        ...f.semantic,
+        near: f.semantic.near.filter((id) => listedIds.has(id)),
+      })),
+      ...(features.size > listed.length
+        ? { omittedFeatures: features.size - listed.length }
+        : {}),
     },
   };
 }

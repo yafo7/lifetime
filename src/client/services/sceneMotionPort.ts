@@ -14,6 +14,7 @@ import {
   type MotionPlan,
   type Vec3,
   type MotionContext,
+  type ActionPoint,
 } from "../../shared/motion";
 import { mapSpace } from "../../shared/sceneMotion";
 import {
@@ -33,6 +34,10 @@ import {
 } from "../motion/characterMachine";
 import type { CharacterMachine } from "../../shared/characterMachine";
 import { actionInputs } from "../../shared/actionBinding";
+import type { TraversalKind } from "../../shared/traversal";
+import { TraversalClearance } from "../navigation/traversalClearance";
+import { TraversalPlanner } from "../navigation/traversalPlanner";
+import { adaptTraversal } from "../navigation/adaptTraversal";
 
 export interface PreparedSceneAction {
   runtime: MotionRuntime;
@@ -42,6 +47,7 @@ export interface PreparedSceneAction {
   timings: ActionTiming[];
   signature: string;
   instanceId: string;
+  missingTraversal?: TraversalKind[];
 }
 /** Stable programmatic boundary. Every scene action is validated before any live pose changes. */
 export class SceneMotionPort {
@@ -63,6 +69,10 @@ export class SceneMotionPort {
   >();
   onChange = () => {};
   onConfigurationChange = (_instanceId: string) => {};
+  onTraversalAssets?: (
+    instanceId: string,
+    kinds: TraversalKind[],
+  ) => Promise<Actor>;
   constructor(private view: Viewport) {
     view.onSceneFrame = (dt) => this.advance(dt);
   }
@@ -157,11 +167,18 @@ export class SceneMotionPort {
     instanceId: string,
     actionId?: string,
     continuation?: MotionOrigin,
+    draftPoints?: ActionPoint[],
+    draftActions?: SceneMotion["actions"],
+    generateAssets = false,
   ): Promise<PreparedSceneAction> {
     const original = this.instance(instanceId),
       signature = this.signature(original),
       i = structuredClone(original),
       actor = this.actors.get(i.actorId)!;
+    if (draftPoints && i.sceneMotion)
+      i.sceneMotion.points = structuredClone(draftPoints);
+    if (draftActions && i.sceneMotion)
+      i.sceneMotion.actions = structuredClone(draftActions);
     const config = i.sceneMotion;
     if (!config) throw new Error("请先制作场景动作");
     validateSceneMotion(config, actor, i, this.map!.map);
@@ -179,19 +196,54 @@ export class SceneMotionPort {
       ? ctx.points!.find((p) => p.id === config.startPointId)!
       : null;
     const origin = {
-      position: nav.project(
-        continuation?.position ??
-          (startPoint ? pointPosition(startPoint) : i.position),
-      ),
+      position: config.traversal?.fly
+        ? ([
+            ...(continuation?.position ??
+              (startPoint ? pointPosition(startPoint) : i.position)),
+          ] as Vec3)
+        : nav.project(
+            continuation?.position ??
+              (startPoint ? pointPosition(startPoint) : i.position),
+          ),
       heading: continuation?.heading ?? (i.rotation * Math.PI) / 180,
     };
-    const plan = sceneActionPlan(action, ctx);
+    const sourcePlan = sceneActionPlan(action, ctx);
+    const clearance = new TraversalClearance(
+      await this.getGeometry(),
+      this.map!.map,
+      config.navigation,
+    );
+    const planner = new TraversalPlanner(nav, clearance, config.traversal);
+    let adapted: ReturnType<typeof adaptTraversal>;
+    try {
+      adapted = adaptTraversal(sourcePlan, ctx, origin.position, planner);
+      if (generateAssets && adapted.missing.length) {
+        if (!this.onTraversalAssets)
+          throw new MotionError(
+            "TRAVERSAL_ANIMATION_MISSING",
+            `需要${adapted.missing.includes("jump") ? "跳跃" : "飞行"}动画，请在演员库准备或通过场景播放补齐`,
+          );
+        const updated = await this.onTraversalAssets(
+          instanceId,
+          adapted.missing,
+        );
+        if (signature !== this.signature(this.instance(instanceId)))
+          throw new Error("配置已更改；生成动画已入库，请重新播放");
+        if (updated.id !== i.actorId) throw new Error("导航动画演员不匹配");
+        this.actors.set(updated.id, updated);
+        ctx.actor = updated;
+        adapted = adaptTraversal(sourcePlan, ctx, origin.position, planner);
+      }
+    } finally {
+      clearance.dispose();
+    }
+    const plan = adapted.plan;
     delete plan.start;
     const runtime = new MotionRuntime({
       route: (from, to, via) => nav.route(from, to, via),
       preserveRoot: true,
       stationary: (position) => {
-        nav.project(position);
+        if (!config.traversal?.fly) nav.project(position);
       },
     });
     const timings = runtime.inspectAction(
@@ -210,7 +262,13 @@ export class SceneMotionPort {
       origin.position,
       origin.heading,
     );
-    await checkStationaryClearance(actor, i, this.map!.map, runtime, timings);
+    await checkStationaryClearance(
+      ctx.actor,
+      i,
+      this.map!.map,
+      runtime,
+      timings,
+    );
     if (signature !== this.signature(this.instance(instanceId)))
       throw new Error("配置已更改，请重新计算路线");
     runtime.reset();
@@ -232,6 +290,7 @@ export class SceneMotionPort {
       timings,
       signature,
       instanceId,
+      missingTraversal: adapted.missing,
     };
   }
   async previewRoute(instanceId: string) {
@@ -239,12 +298,39 @@ export class SceneMotionPort {
     this.view.showSceneGuide(instanceId, p.runtime.getTrajectory());
     return p.timings;
   }
+  /** Uses the actual action compiler and NavMesh without changing live points or playback. */
+  async inspectRoute(
+    instanceId: string,
+    actionId: string,
+    points: ActionPoint[],
+    actions?: SceneMotion["actions"],
+  ): Promise<Vec3[][]> {
+    const prepared = await this.prepareAction(
+      instanceId,
+      actionId,
+      undefined,
+      points,
+      actions,
+    );
+    const paths = prepared.runtime.getTrajectory();
+    prepared.runtime.reset();
+    return paths;
+  }
   async executeAction(instanceId: string, actionId?: string) {
-    const p = await this.prepareAction(instanceId, actionId);
+    const p = await this.prepareAction(
+      instanceId,
+      actionId,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
     this.startPrepared(p);
     return p.runtime.getExecutionState()!.executionId;
   }
   startPrepared(p: PreparedSceneAction, fromMachine = false) {
+    if (p.missingTraversal?.length)
+      throw new Error("导航动画尚未准备好，请点击播放生成所需素材");
     const i = this.instance(p.instanceId);
     if (p.signature !== this.signature(i))
       throw new MotionError("STALE_PLAN", "配置已修改，请重新计算动作");
@@ -430,12 +516,17 @@ export class SceneMotionPort {
       const a = i.sceneMotion?.actions.find((a) => a.id === id);
       if (!a || "plan" in a) throw new Error("地图动作引用不存在");
       a.bindings = structuredClone(bindings);
+      if (a.excludedRouteInputs)
+        a.excludedRouteInputs = a.excludedRouteInputs.filter(
+          (id) => !Object.hasOwn(bindings, id),
+        );
       if (refresh) {
         const source = this.actors
           .get(i.actorId)
           ?.motionActions?.find((source) => source.id === a.actorActionId);
         if (!source) throw new Error("演员动作不存在");
         a.actorActionUpdatedAt = source.updatedAt;
+        delete a.excludedRouteInputs;
       }
     });
   }
@@ -450,6 +541,7 @@ export class SceneMotionPort {
         actions:
           i.sceneMotion?.actions.map((a) => ({ id: a.id, name: a.name })) ?? [],
         machine: i.sceneMotion?.machine ?? null,
+        traversal: i.sceneMotion?.traversal ?? { fly: false },
         actorActions: this.getActorActions(i.id),
       })),
     };
@@ -525,6 +617,9 @@ export class SceneMotionPort {
                 heading: state.heading,
               }
             : undefined,
+          undefined,
+          undefined,
+          true,
         );
         if (current() && this.machines.get(instanceId) === machine)
           this.startPrepared(p, true);

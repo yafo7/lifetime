@@ -4,6 +4,9 @@ import type { MotionFrame } from "../motion/runtime";
 import * as THREE from "three";
 import { RuntimeIndex } from "@voxel-studio/render-runtime";
 import { ActorPreviewControls } from "./orbitControls";
+import { ThirdPersonControls } from "./thirdPersonControls";
+import type { Navigation } from "../navigation/navigation";
+import type { PlayerFrame } from "../play/playerMotion";
 import {
   buildModelGroupWithNodes,
   type BuiltModelGroup,
@@ -106,6 +109,20 @@ export class Viewport {
   private loadVersion = 0;
   private disposed = false;
   private selected: string | null = null;
+  private player: {
+    id: string;
+    controls: ThirdPersonControls;
+    run: AnimationClip;
+    jump: AnimationClip;
+    mode: string;
+    time: number;
+    blendTime: number;
+    from: Pose | null;
+  } | null = null;
+  onPlayerFrame = (_frame: PlayerFrame | null) => {};
+  get playerState(): PlayerFrame | null {
+    return this.player?.controls.motor.frame ?? null;
+  }
   readonly motion = new MotionRuntime();
   private motionRequest: {
     plan: MotionPlan;
@@ -120,6 +137,8 @@ export class Viewport {
   onSceneFrame = (_dt: number) => {};
   private sceneGeometry: SceneGeometry | null = null;
   private sceneGuides = new Map<string, THREE.Group>();
+  private sceneGuideScene = new THREE.Scene();
+  private sceneGuideInstance: string | null = null;
   private surfaces = new SurfacePicker();
   private actorSurfaceId = "unbound";
   setActorSurfaceId(id: string): void {
@@ -431,6 +450,7 @@ export class Viewport {
     this.visuals.delete(id);
   }
   private clearVisuals(): void {
+    this.endPlayer();
     this.clearMotionGuide();
     for (const id of this.sceneGuides.keys()) this.clearSceneGuide(id);
     this.motion.reset();
@@ -438,6 +458,90 @@ export class Viewport {
     for (const v of this.visuals.values()) v.dispose();
     this.visuals.clear();
     this.refreshSurfaces();
+  }
+  async beginPlayer(
+    instance: ActorInstance,
+    model: unknown,
+    run: AnimationClip,
+    jump: AnimationClip,
+    nav: Navigation,
+    geometry: SceneGeometry,
+    exit: () => void,
+  ): Promise<void> {
+    this.endPlayer();
+    const version = this.loadVersion;
+    await this.add(instance, model, null);
+    if (!this.active || this.disposed || version !== this.loadVersion) {
+      this.remove(instance.id);
+      throw new Error("地图或工作区已切换，请重新进入");
+    }
+    try {
+      this.controls.deactivate();
+      this.resize();
+      this.player = {
+        id: instance.id,
+        controls: new ThirdPersonControls(
+          this.canvas,
+          this.camera,
+          nav,
+          geometry,
+          instance.position,
+          (instance.rotation * Math.PI) / 180,
+          jump.duration,
+          exit,
+        ),
+        run,
+        jump,
+        mode: "idle",
+        time: 0,
+        blendTime: 0,
+        from: null,
+      };
+      this.updatePlayer(0);
+    } catch (e) {
+      this.remove(instance.id);
+      if (this.active) this.controls.activate();
+      throw e;
+    }
+  }
+  endPlayer(): void {
+    const player = this.player;
+    if (!player) return;
+    this.player = null;
+    player.controls.dispose();
+    this.remove(player.id);
+    if (this.active) this.controls.activate();
+    this.onPlayerFrame(null);
+  }
+  private updatePlayer(dt: number): void {
+    const p = this.player;
+    if (!p) return;
+    const frame = p.controls.update(dt),
+      v = this.visuals.get(p.id)!;
+    const mode = frame.airborne ? "jump" : frame.moving ? "run" : "idle";
+    if (mode !== p.mode) {
+      p.from = v.motionPose ?? v.player.pose(null, 0, "path");
+      p.mode = mode;
+      p.time = 0;
+      p.blendTime = 0;
+    }
+    p.time += dt;
+    p.blendTime += dt;
+    const clip = mode === "jump" ? p.jump : mode === "run" ? p.run : null;
+    const time =
+      mode === "jump"
+        ? frame.jumpPhase * p.jump.duration
+        : clip
+          ? p.time % clip.duration
+          : 0;
+    let pose = v.player.pose(clip, time, "path");
+    if (p.from && p.blendTime < 0.12)
+      pose = v.player.blend(p.from, pose, p.blendTime / 0.12);
+    v.player.apply(pose);
+    v.motionPose = pose;
+    v.root.position.fromArray(frame.position);
+    v.root.rotation.y = frame.heading;
+    this.onPlayerFrame(frame);
   }
   executeAction(
     plan: MotionPlan,
@@ -523,23 +627,27 @@ export class Viewport {
   showSceneGuide(id: string, paths: Vec3[][]): void {
     this.clearSceneGuide(id);
     const group = new THREE.Group();
+    group.visible = id === this.sceneGuideInstance;
     group.userData.lifetimeHelper = true;
     for (const points of paths)
-      if (points.length > 1)
-        group.add(
-          new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints(
-              points.map((p) => new THREE.Vector3(p[0], p[1] + 0.05, p[2])),
-            ),
-            new THREE.LineBasicMaterial({
-              color: 0x2196d2,
-              depthTest: false,
-              transparent: true,
-              opacity: 0.85,
-            }),
+      if (points.length > 1) {
+        const line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(
+            points.map((p) => new THREE.Vector3(p[0], p[1] + 0.05, p[2])),
           ),
+          new THREE.LineBasicMaterial({
+            color: 0x087cff,
+            depthTest: false,
+            depthWrite: false,
+            fog: false,
+            transparent: true,
+            opacity: 1,
+          }),
         );
-    this.scene.add(group);
+        line.renderOrder = 1000;
+        group.add(line);
+      }
+    this.sceneGuideScene.add(group);
     this.sceneGuides.set(id, group);
   }
   clearSceneGuide(id: string): void {
@@ -549,6 +657,10 @@ export class Viewport {
       g.removeFromParent();
       this.sceneGuides.delete(id);
     }
+  }
+  setSceneGuideInstance(id: string | null): void {
+    this.sceneGuideInstance = id;
+    for (const [key, group] of this.sceneGuides) group.visible = key === id;
   }
   focusInstance(id: string): void {
     const v = this.visuals.get(id);
@@ -645,6 +757,11 @@ export class Viewport {
   get playbackRate(): number {
     return this.visuals.get("preview")?.rate ?? 1;
   }
+  get isPlaying(): boolean {
+    return this.isAction
+      ? this.motion.getExecutionState()?.status === "running"
+      : [...this.visuals.values()].some((v) => v.playing);
+  }
   setPlaybackRate(rate: number): void {
     if (!Number.isFinite(rate) || rate < 0.25 || rate > 3)
       throw new Error("播放倍率必须在 0.25～3 之间");
@@ -724,8 +841,18 @@ export class Viewport {
     }
   }
   fit(): void {
+    if (this.player) return;
     const map = this.viewer?.runtime.map;
     if (map) {
+      const rendered = this.viewer?.runtime.rendered?.group;
+      // Ocean surfaces extend far beyond the playable map and must not widen its initial shot.
+      if (rendered && !map.waterBodies.some((body) => body.type === "ocean")) {
+        const bounds = new THREE.Box3().setFromObject(rendered);
+        if (!bounds.isEmpty()) {
+          this.controls.fit(bounds);
+          return;
+        }
+      }
       this.controls.fit(
         new THREE.Box3().setFromCenterAndSize(
           new THREE.Vector3(0, map.box.size[1] / 2, 0),
@@ -743,9 +870,10 @@ export class Viewport {
     }
   }
   setActive(value: boolean): void {
+    if (!value) this.endPlayer();
     this.active = value;
     if (value) {
-      this.controls.activate();
+      if (!this.player) this.controls.activate();
       this.resize();
       if (!this.frame) {
         this.last = performance.now();
@@ -769,6 +897,7 @@ export class Viewport {
     this.elapsed += dt;
     this.controls.update();
     this.onSceneFrame(dt);
+    this.updatePlayer(dt);
     this.onFrame();
     const state = this.motion.getExecutionState();
     for (const [id, v] of this.visuals) {
@@ -785,6 +914,19 @@ export class Viewport {
     }
     if (this.viewer) this.viewer.tick(dt);
     else this.renderer.render(this.scene, this.camera);
+    // Navigation is an editor overlay, drawn after the map's palette and fog passes.
+    if ([...this.sceneGuides.values()].some((group) => group.visible)) {
+      const autoClear = this.renderer.autoClear;
+      const target = this.renderer.getRenderTarget();
+      try {
+        this.renderer.autoClear = false;
+        this.renderer.setRenderTarget(null);
+        this.renderer.render(this.sceneGuideScene, this.camera);
+      } finally {
+        this.renderer.setRenderTarget(target);
+        this.renderer.autoClear = autoClear;
+      }
+    }
     this.notify();
   };
   private notify(): void {

@@ -7,6 +7,19 @@ export interface SemanticFeature {
   source: "map" | "name";
   queries: LocationRelation[];
   near: string[];
+  /** Bounded source names/tags; not AI-invented capabilities. */
+  aliases?: string[];
+  /** Coarse map-relative location. North is -Z. No coordinates leave the resolver. */
+  sector?:
+    | "northwest"
+    | "north"
+    | "northeast"
+    | "west"
+    | "center"
+    | "east"
+    | "southwest"
+    | "south"
+    | "southeast";
 }
 /** Small AI-facing catalogue. Geometry, paths and coordinates never appear here. */
 export interface MapSemantics {
@@ -14,6 +27,7 @@ export interface MapSemantics {
   revision: number;
   name: string;
   features: SemanticFeature[];
+  omittedFeatures?: number;
 }
 export interface LocationIntent {
   key: string;

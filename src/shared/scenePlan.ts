@@ -68,6 +68,7 @@ export interface SceneCatalogue {
     name: string;
     models: {
       id: string;
+      description?: string;
       animations: {
         id: string;
         name: string;
@@ -102,19 +103,18 @@ export function sceneCatalogue(
     actors: actors.map((a) => ({
       id: a.id,
       name: a.name,
-      models: a.modelRevisions
-        .map((m) => ({
-          id: m.id,
-          animations: a.animations
-            .filter((c) => c.modelRevisionId === m.id)
-            .map((c) => ({
-              id: c.id,
-              name: c.name,
-              duration: c.duration,
-              loop: Boolean((c.animation as { loop?: boolean })?.loop),
-            })),
-        }))
-        .filter((m) => m.animations.length),
+      models: a.modelRevisions.map((m) => ({
+        id: m.id,
+        description: m.prompt.slice(0, 600),
+        animations: a.animations
+          .filter((c) => c.modelRevisionId === m.id)
+          .map((c) => ({
+            id: c.id,
+            name: c.name,
+            duration: c.duration,
+            loop: Boolean((c.animation as { loop?: boolean })?.loop),
+          })),
+      })),
     })),
     instances: instances.map((i) => ({
       id: i.id,

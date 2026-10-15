@@ -136,6 +136,81 @@ function setup(map = testMap, actors = actor) {
   return { port, instances, frames, resets, view };
 }
 describe("scene motion port", () => {
+  it("previews jump links without generation, then generates once on playback and lands at the map target", async () => {
+    const map = structuredClone(testMap);
+    map.objects.push({
+      id: "platform",
+      name: "platform",
+      assetId: null,
+      visible: true,
+      transform: {
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        scale: [4, 1.5, 4],
+        size: [1, 1, 1],
+      },
+    } as any);
+    const { port, view } = setup(map);
+    const npc = instance("one");
+    npc.sceneMotion!.points[0].ground = [0, 1.5, 0];
+    port.bind(
+      { id: "map", name: "map", map, scheme: null, updatedAt: 1 },
+      new Map([[actor.id, actor]]),
+      [npc],
+    );
+    let generations = 0;
+    port.onTraversalAssets = async (_id, kinds) => {
+      generations++;
+      expect(kinds).toEqual(["jump"]);
+      return {
+        ...actor,
+        animations: [
+          ...actor.animations,
+          { ...clip, id: "jump", name: "导航跳跃" },
+        ],
+      };
+    };
+    try {
+      const preview = await port.prepareAction("one");
+      expect(preview.missingTraversal).toEqual(["jump"]);
+      expect(generations).toBe(0);
+      expect(() => port.startPrepared(preview)).toThrow("尚未准备好");
+      await port.executeAction("one");
+      expect(generations).toBe(1);
+      view.onSceneFrame(100);
+      expect(
+        Math.abs(port.getExecutionState("one")!.position[1] - 1.5),
+      ).toBeLessThan(0.1);
+      await port.executeAction("one");
+      expect(generations).toBe(1);
+    } finally {
+      port.dispose();
+    }
+  });
+  it("calculates the navigation route against edited draft points without changing playback or persisted configuration", async () => {
+    const { port } = setup();
+    try {
+      await port.executeAction("one");
+      port.pauseExecution("one");
+      const before = port.getConfiguration("one"),
+        state = port.getExecutionState("one");
+      const points = structuredClone(before.sceneMotion!.points);
+      points[0].ground = [2, 0, 4];
+      const paths = await port.inspectRoute("one", "action", points);
+      expect(paths).toHaveLength(1);
+      expect(paths[0].at(-1)![0]).toBeCloseTo(2, 1);
+      expect(paths[0].at(-1)![2]).toBeCloseTo(4, 1);
+      expect(port.getConfiguration("one")).toEqual(before);
+      expect(port.getExecutionState("one")).toEqual(state);
+      points[0].ground = [10000, 0, 0];
+      await expect(
+        port.inspectRoute("one", "action", points),
+      ).rejects.toThrow();
+      expect(port.getExecutionState("one")).toEqual(state);
+    } finally {
+      port.dispose();
+    }
+  });
   it("pins actor actions, blocks stale resume, and explicitly refreshes a reference without copying steps", async () => {
     const draft = createActionTemplate(
       actor,

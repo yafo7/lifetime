@@ -61,6 +61,7 @@ export interface Performance {
   sceneDesign?: import("./scenePlan").SceneDesign;
 }
 export interface ResourceSummary {
+  mapId?: string;
   id: string;
   name: string;
   updatedAt: number;

@@ -5,7 +5,7 @@ import {
 } from "../../shared/scenePlan";
 
 export const sceneProtocol = `你是 Lifetime 场景规划器，负责使用现有素材构建或修改活动场景。只输出一个 JSON 对象，不输出代码或 Markdown。
-AI 只表达位置意图，不输出任何坐标、几何、路径拐点或模型节点。map.features 是权威地图目录，queries 是支持的查询，实际点位和可达性由本地系统验证。只使用 catalogue 中存在的演员、模型和动画；没有需要的素材时返回 {error:"具体缺失的演员或动画"}。本版本不调用模型或动画生成。
+AI 只表达位置意图，不输出任何坐标、几何、路径拐点或模型节点。map.features 是权威地图目录，aliases 是源资源别名，sector 是地图九宫格方位（north对应-Z），near 仅表示空间邻近而非道路连通。queries 是可尝试的查询，不是已经验证可达；实际区域候选、支撑面和路线由本地系统确定。center表示中央区域，建筑应使用低处地板而非屋顶；near/shore不可替代center。只使用 catalogue 中存在的演员、模型和动画；没有需要的素材时返回 {error:"具体缺失的演员或动画"}。本版本不调用模型或动画生成。
 格式 {schemaVersion:1,name,actors:[{key,name,actorId,modelRevisionId,instanceId?,origin,locations:[{key,featureId,relation}],actions:[{key,name,steps:[]}],states:[{key,name,action,repetitions,waitSeconds,next}],initialState}],removeInstanceIds?:[]}。
 key 使用英文标识且在各自列表内唯一。origin 引用一个 locations.key；可以引用路线，其第一个点为站位。relation 使用提供的 near、center、shore、surroundingRoute、alongGuide、facing。facing 只是朝向目标，可以在水中，不能站立或移动到此点。路线使用 surroundingRoute 或 alongGuide。
 steps 支持：{type:"moveTo",target:locationKey,animation:clipId,speed:每秒世界单位,rate:倍率}；{type:"followRoute",route:locationKey,animation:clipId,speed,rate}；{type:"playClip",animation:clipId,rate,repetitions}；{type:"face",target:locationKey}；{type:"wait",seconds}。

@@ -10,11 +10,15 @@ import {
   currentScenePlan,
   type ScenePlan,
 } from "../src/shared/scenePlan";
-import { assembleScene } from "../src/client/scene/performanceAssembler";
+import {
+  assembleScene,
+  AssemblyNeedsRepair,
+} from "../src/client/scene/performanceAssembler";
 import { planScene } from "../src/client/scene/planner";
 import { revision, clip } from "./fixtures";
 import type { Actor, Performance } from "../src/shared/contracts";
 import type { MapResource } from "../src/shared/maps";
+import type { AssemblyDraft } from "../src/shared/sceneBuild";
 import { pointPosition } from "../src/shared/motion";
 
 import {
@@ -171,28 +175,87 @@ describe("semantic scene planning", () => {
       f.dispose();
     }
   });
-  it("does not publish an unreachable bridge by silently increasing actor climbing ability", async () => {
+  it("adapts a raised bridge using jump links without silently increasing actor climbing ability", async () => {
     const map = structuredClone(sceneMap);
     map.map.objects[0].transform.position[1] = 2;
     const geometry = await buildSceneGeometry(map.map),
       nav = new Navigation({ radius: 0.3, height: 3, climb: 0.3, slope: 35 });
     try {
       await nav.build(geometry);
-      await expect(
-        assembleScene(scenePlan(), {
-          map,
-          actors: new Map([[sceneActor.id, sceneActor]]),
-          base: baseScene,
-          request: "go to bridge",
-          geometry,
-          navigation: async () => nav,
-          climb: 0.3,
-        }),
-      ).rejects.toThrow();
+      const result = await assembleScene(scenePlan(), {
+        map,
+        actors: new Map([[sceneActor.id, sceneActor]]),
+        base: baseScene,
+        request: "go to bridge",
+        geometry,
+        navigation: async () => nav,
+        climb: 0.3,
+      });
+      expect(
+        result.performance.instances[0].sceneMotion!.navigation.climb,
+      ).toBe(0.3);
+      expect(
+        result.actions.every(({ action }) =>
+          action.plan.steps.every(
+            (step) => step.type !== "moveTo" || step.path?.mode === "ground",
+          ),
+        ),
+      ).toBe(true);
       expect(nav.profile.climb).toBe(0.3);
     } finally {
       nav.dispose();
       geometry.dispose();
+    }
+  });
+  it("replaces an existing role model and rebuilds complete actions against its new clips", async () => {
+    const f = await assemblyFixture();
+    try {
+      const first = await assembleScene(scenePlan(), f.context);
+      const actor = structuredClone(sceneActor);
+      actor.motionActions = first.actions.map((item) => item.action);
+      const model = { ...structuredClone(revision), id: "replacement-model" };
+      const animation = {
+        ...structuredClone(clip),
+        id: "replacement-clip",
+        modelRevisionId: model.id,
+      };
+      actor.modelRevisions.push(model);
+      actor.animations.push(animation);
+      first.performance.instances[0].scale = 9;
+      const plan = scenePlan();
+      plan.actors[0].instanceId = first.performance.instances[0].id;
+      plan.actors[0].modelRevisionId = model.id;
+      for (const action of plan.actors[0].actions)
+        for (const step of action.steps)
+          if ("animation" in step) step.animation = animation.id;
+      const second = await assembleScene(plan, {
+        ...f.context,
+        base: first.performance,
+        actors: new Map([[actor.id, actor]]),
+      });
+      const instance = second.performance.instances[0];
+      expect(instance.id).toBe(first.performance.instances[0].id);
+      expect(instance.modelRevisionId).toBe(model.id);
+      expect(instance.scale).not.toBe(9);
+      expect(second.actions).toHaveLength(2);
+      expect(
+        second.actions.every(
+          (item) => item.action.modelRevisionId === model.id,
+        ),
+      ).toBe(true);
+      expect(
+        instance.sceneMotion!.actions.every((binding) =>
+          first.performance.instances[0].sceneMotion!.actions.every(
+            (old) =>
+              "actorActionId" in old &&
+              "actorActionId" in binding &&
+              old.actorActionId !== binding.actorActionId,
+          ),
+        ),
+      ).toBe(true);
+      expect(first.performance.instances[0].modelRevisionId).toBe(revision.id);
+    } finally {
+      f.dispose();
     }
   });
   it("preserves an edited point across state-only and later action updates", async () => {
@@ -257,6 +320,189 @@ describe("semantic scene planning", () => {
           actors: new Map([[actor.id, actor]]),
         }),
       ).rejects.toThrow("标识与保留角色重复");
+    } finally {
+      f.dispose();
+    }
+  });
+  it("snaps a guide near a NavMesh boundary without weakening execution projection", async () => {
+    const f = await assemblyFixture();
+    try {
+      const map = structuredClone(sceneMap);
+      map.map.guides = [
+        {
+          id: "edge",
+          name: "edge",
+          points: [
+            [8, 8],
+            [9.95, 8],
+          ],
+          curve: "polyline",
+          closed: false,
+          width: 1,
+          tags: ["path"],
+        },
+      ];
+      expect(() => f.nav.project([9.95, 0, 8])).toThrow();
+      const result = await new LocationResolver(
+        buildSemanticIndex(map),
+        f.geometry,
+        f.nav,
+      ).resolve({
+        key: "edge",
+        featureId: "guide:edge",
+        relation: "alongGuide",
+      });
+      const last = pointPosition(result.points.at(-1)!);
+      expect(Math.abs(last[0] - 9.95)).toBeLessThanOrEqual(0.65);
+      expect(() => f.nav.project(last)).not.toThrow();
+      expect(
+        f.nav.route(pointPosition(result.points[0]), last).length,
+      ).toBeGreaterThan(1);
+    } finally {
+      f.dispose();
+    }
+  });
+  it("retains the standing surface when a raised center is disconnected", async () => {
+    const map = structuredClone(sceneMap);
+    map.map.objects[0].transform.position[1] = 2;
+    const geometry = await buildSceneGeometry(map.map),
+      nav = new Navigation({ radius: 0.3, height: 3, climb: 0.3, slope: 35 });
+    try {
+      await nav.build(geometry);
+      const resolver = new LocationResolver(
+        buildSemanticIndex(map),
+        geometry,
+        nav,
+      );
+      let error: any;
+      try {
+        await resolver.resolve(
+          { key: "center", featureId: "object:bridge", relation: "center" },
+          [6, 0, 5],
+        );
+      } catch (e) {
+        error = e;
+      }
+      expect(error.code).toBe("TARGET_UNREACHABLE");
+      expect(pointPosition(error.points[0])[1]).toBeCloseTo(2.2);
+      expect(error.points[0].surface.objectId).toBe("bridge");
+      expect(nav.profile.climb).toBe(0.3);
+    } finally {
+      nav.dispose();
+      geometry.dispose();
+    }
+  });
+  it("retains independent actions and stable inputs after a location fails, then accepts manual repair", async () => {
+    const f = await assemblyFixture();
+    let draft: AssemblyDraft | undefined;
+    const checkpoint = async (value: AssemblyDraft) => {
+      draft = structuredClone(value);
+    };
+    const resolve = LocationResolver.prototype.resolve;
+    let fail = true;
+    LocationResolver.prototype.resolve = async function (intent, from) {
+      if (intent.key === "show" && fail) throw new Error("blocked support");
+      return resolve.call(this, intent, from);
+    };
+    try {
+      await expect(
+        assembleScene(scenePlan(), { ...f.context, checkpoint }),
+      ).rejects.toBeInstanceOf(AssemblyNeedsRepair);
+      expect(draft!.roles.duck.locations.show.state).toBe("needs-repair");
+      expect(draft!.roles.duck.actions.patrol.state).toBe("ready");
+      expect(draft!.roles.duck.actions.show.state).toBe("needs-repair");
+      const original = structuredClone(draft!);
+      const instanceId = draft!.roles.duck.instanceId;
+      const actionId = draft!.roles.duck.actions.patrol.action!.id;
+      fail = false;
+      const candidate = await new LocationResolver(
+        buildSemanticIndex(sceneMap),
+        f.geometry,
+        f.nav,
+      ).resolve(scenePlan().actors[0].locations[1]);
+      const location = draft!.roles.duck.locations.show;
+      location.points[0] = {
+        ...candidate.points[0],
+        id: location.points[0].id,
+        name: location.points[0].name,
+      };
+      location.manual = true;
+      location.state = "pending";
+      const result = await assembleScene(scenePlan(), {
+        ...f.context,
+        draft,
+        checkpoint,
+      });
+      expect(result.performance.instances[0].id).toBe(instanceId);
+      expect(result.actions[0].action.id).toBe(actionId);
+      expect(draft!.state).toBe("ready");
+      expect(draft!.roles.duck.locations.show.manual).toBe(true);
+      expect(draft!.roles.duck.locations.circuit.points).toEqual(
+        original.roles.duck.locations.circuit.points,
+      );
+      expect(baseScene.instances).toEqual([]);
+    } finally {
+      LocationResolver.prototype.resolve = resolve;
+      f.dispose();
+    }
+  });
+  it("keeps another role complete when one role fails, and stops immediately on checkpoint storage failure", async () => {
+    const f = await assemblyFixture();
+    const plan = scenePlan();
+    plan.actors.push({
+      ...structuredClone(plan.actors[0]),
+      key: "missing",
+      actorId: "missing",
+    });
+    let draft: AssemblyDraft | undefined;
+    try {
+      await expect(
+        assembleScene(plan, {
+          ...f.context,
+          checkpoint: async (value) => {
+            draft = structuredClone(value);
+          },
+        }),
+      ).rejects.toBeInstanceOf(AssemblyNeedsRepair);
+      expect(draft!.roles.duck.actions.patrol.state).toBe("ready");
+      expect(draft!.roles.missing.issues.length).toBeGreaterThan(0);
+      let saves = 0;
+      await expect(
+        assembleScene(scenePlan(), {
+          ...f.context,
+          checkpoint: async () => {
+            saves++;
+            throw new Error("disk full");
+          },
+        }),
+      ).rejects.toThrow("空间草稿保存失败");
+      expect(saves).toBe(1);
+    } finally {
+      f.dispose();
+    }
+  });
+  it("rechecks an edited route while retaining unchanged compiled action resources", async () => {
+    const f = await assemblyFixture();
+    let draft: AssemblyDraft | undefined;
+    try {
+      await assembleScene(scenePlan(), {
+        ...f.context,
+        checkpoint: async (value) => {
+          draft = structuredClone(value);
+        },
+      });
+      const oldCheck = draft!.roles.duck.checks.show.signature;
+      const ids = Object.values(draft!.roles.duck.actions).map(
+        (a) => a.action!.id,
+      );
+      draft!.roles.duck.locations.show.points[0].ground![0] += 0.1;
+      delete draft!.roles.duck.locations.show.points[0].surface;
+      draft!.roles.duck.locations.show.manual = true;
+      await assembleScene(scenePlan(), { ...f.context, draft });
+      expect(draft!.roles.duck.checks.show.signature).not.toBe(oldCheck);
+      expect(
+        Object.values(draft!.roles.duck.actions).map((a) => a.action!.id),
+      ).toEqual(ids);
     } finally {
       f.dispose();
     }

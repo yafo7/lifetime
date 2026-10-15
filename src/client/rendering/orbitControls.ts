@@ -66,7 +66,7 @@ export class ActorPreviewControls {
     this.target.copy(sphere.center);
     const vertical = THREE.MathUtils.degToRad(this.camera.fov / 2);
     const horizontal = Math.atan(Math.tan(vertical) * this.camera.aspect);
-    const distance = Math.max(sphere.radius * 3, sphere.radius / Math.sin(Math.min(vertical, horizontal)) * 1.1, 10);
+    const distance = Math.max(sphere.radius / Math.sin(Math.min(vertical, horizontal)) * 1.08, 10);
     this.camera.position.copy(this.target).addScaledVector(new THREE.Vector3(0.5, 0.55, 0.7).normalize(), distance);
     this.camera.lookAt(this.target);
     this.camera.updateMatrixWorld();

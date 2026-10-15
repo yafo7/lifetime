@@ -113,6 +113,7 @@ describe("independent resource storage", () => {
     const saved = await store.savePerformance(draft),
       loaded = await new Store(dir).get<Performance>("performances", draft.id);
     expect(loaded).toEqual(saved);
+    expect((await store.list("performances"))[0].mapId).toBe(map.id);
     expect(loaded.instances[0].sceneMotion!.actions[0]).not.toHaveProperty(
       "plan",
     );

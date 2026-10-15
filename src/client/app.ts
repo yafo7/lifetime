@@ -8,18 +8,19 @@ export async function startApp(host: HTMLElement): Promise<void> {
     <header class="lifetime-topbar">
       <div class="lifetime-brand">
         <span class="lifetime-brand-mark">L</span
-        ><span><strong>Lifetime</strong><small>ACTORS · PLAY</small></span>
+        ><span><strong>Lifetime</strong></span>
       </div>
       <nav class="lifetime-nav" aria-label="Lifetime 工作区">
-        <button data-workspace="actors" class="active" aria-current="page">
-          <b>Actors</b><span>演员休息厅</span></button
-        ><button data-workspace="play"><b>Play</b><span>演出区域</span></button>
+        <button data-workspace="play" class="active" aria-current="page">
+          <b>场景</b>
+        </button>
+        <button data-workspace="actors"><b>演员</b></button>
       </nav>
-      <div class="lifetime-task-indicator" data-task>无进行中的任务</div>
+      <div class="lifetime-task-indicator" data-task hidden></div>
     </header>
     <div class="lifetime-workspaces">
-      <section data-panel="actors" class="lifetime-workspace"></section>
-      <section data-panel="play" class="lifetime-workspace" hidden></section>
+      <section data-panel="actors" class="lifetime-workspace" hidden></section>
+      <section data-panel="play" class="lifetime-workspace"></section>
     </div>
     <div
       class="notification"
@@ -54,7 +55,9 @@ export async function startApp(host: HTMLElement): Promise<void> {
       ? `${count} 个任务进行中`
       : jobs.items.some((j) => j.state === "save-failed")
         ? "有生成结果等待保存"
-        : "无进行中的任务";
+        : "";
+    select<HTMLElement>(host, "[data-task]").hidden =
+      !count && !jobs.items.some((j) => j.state === "save-failed");
     actors.renderJobs();
   };
   let completedCount = 0;
@@ -87,7 +90,8 @@ export async function startApp(host: HTMLElement): Promise<void> {
         play.setActive(name === "play");
       }),
   );
-  actors.setActive(true);
+  actors.setActive(false);
+  play.setActive(true);
   window.addEventListener("beforeunload", (event) => {
     if (jobs.busy || play.busy || play.dirty) {
       event.preventDefault();

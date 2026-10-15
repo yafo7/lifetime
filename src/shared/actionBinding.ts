@@ -20,6 +20,8 @@ export interface BoundAction {
   actorActionUpdatedAt: number;
   /** Actor input -> scene point ID. No animation or plan is stored in Play. */
   bindings: Record<string, string>;
+  /** Map-specific route edits; only inputs used exclusively as intermediate waypoints. */
+  excludedRouteInputs?: string[];
 }
 export interface ActionInput {
   id: string;
@@ -29,16 +31,23 @@ export interface ActionInput {
 function targets(
   plan: MotionPlan,
   visit: (target: Target, key: string) => Target,
+  omitRouteTarget?: (target: Target, key: string) => boolean,
 ): MotionPlan {
   const copy = structuredClone(plan);
   delete copy.start; // Only Play determines scene placement; actor preview start never teleports an instance.
+  copy.steps = copy.steps.filter(
+    (step) =>
+      step.type !== "moveTo" ||
+      !omitRouteTarget?.(step.destination, `${step.id}:destination`),
+  );
   for (const step of copy.steps) {
     if (step.type === "moveTo") {
       step.destination = visit(step.destination, `${step.id}:destination`);
       if (step.path?.via)
-        step.path.via = step.path.via.map((t, index) =>
-          visit(t, `${step.id}:via:${index}`),
-        );
+        step.path.via = step.path.via.flatMap((t, index) => {
+          const key = `${step.id}:via:${index}`;
+          return omitRouteTarget?.(t, key) ? [] : [visit(t, key)];
+        });
     } else if (step.type === "turnTo" && step.target)
       step.target = visit(step.target, `${step.id}:facing`);
   }
@@ -47,7 +56,7 @@ function targets(
 function input(
   target: Target,
   key: string,
-  action: SavedAction,
+  action: Pick<SavedAction, "plan" | "points">,
 ): ActionInput | null {
   if (Array.isArray(target))
     return {
@@ -71,7 +80,9 @@ function input(
     };
   return null;
 }
-export function actionInputs(action: SavedAction): ActionInput[] {
+export function actionInputs(
+  action: Pick<SavedAction, "plan" | "points">,
+): ActionInput[] {
   const found = new Map<string, ActionInput>();
   targets(action.plan, (target, key) => {
     const slot = input(target, key, action);
@@ -79,6 +90,27 @@ export function actionInputs(action: SavedAction): ActionInput[] {
     return target;
   });
   return [...found.values()];
+}
+/** Final destinations, performance stops and facing inputs must remain bound. */
+export function routeOnlyInputs(action: SavedAction): Set<string> {
+  const via = new Set<string>(),
+    required = new Set<string>();
+  const intermediate = new Set(
+    action.plan.steps.flatMap((step, index) =>
+      step.type === "moveTo" && action.plan.steps[index + 1]?.type === "moveTo"
+        ? [`${step.id}:destination`]
+        : [],
+    ),
+  );
+  targets(action.plan, (target, key) => {
+    const slot = input(target, key, action);
+    if (slot)
+      (/:via:\d+$/.test(key) || intermediate.has(key) ? via : required).add(
+        slot.id,
+      );
+    return target;
+  });
+  return new Set([...via].filter((id) => !required.has(id)));
 }
 export function actorAction(
   actor: Actor,
@@ -114,6 +146,14 @@ export function resolveBoundAction(
 ): MotionPlan {
   const source = actorAction(actor, binding, ctx.modelRevisionId!, strict);
   const inputs = actionInputs(source);
+  const excluded = binding.excludedRouteInputs ?? [];
+  const removable = routeOnlyInputs(source);
+  if (
+    !Array.isArray(excluded) ||
+    excluded.some((id) => typeof id !== "string" || !removable.has(id)) ||
+    new Set(excluded).size !== excluded.length
+  )
+    throw new Error("只能移除路径途经点，不能移除动作终点或朝向目标");
   if (
     !binding.bindings ||
     typeof binding.bindings !== "object" ||
@@ -127,20 +167,28 @@ export function resolveBoundAction(
     )
   )
     throw new Error("动作地图绑定字段无效，请更新动作引用");
-  const plan = targets(source.plan, (target, key) => {
-    const slot = input(target, key, source);
-    if (!slot) return target;
-    const id = Object.hasOwn(binding.bindings, slot.id)
-      ? binding.bindings[slot.id]
-      : undefined;
-    if (id === undefined && !strict) return { context: "actionStartPosition" };
-    if (!id || !ctx.points?.some((p) => p.id === id))
-      throw new MotionError(
-        "UNBOUND_INPUT",
-        `请为动作输入 ${slot.name} 绑定地图点`,
-      );
-    return { point: id };
-  });
+  const plan = targets(
+    source.plan,
+    (target, key) => {
+      const slot = input(target, key, source);
+      if (!slot) return target;
+      const id = Object.hasOwn(binding.bindings, slot.id)
+        ? binding.bindings[slot.id]
+        : undefined;
+      if (id === undefined && !strict)
+        return { context: "actionStartPosition" };
+      if (!id || !ctx.points?.some((p) => p.id === id))
+        throw new MotionError(
+          "UNBOUND_INPUT",
+          `请为动作输入 ${slot.name} 绑定地图点`,
+        );
+      return { point: id };
+    },
+    (target, key) => {
+      const slot = input(target, key, source);
+      return !!slot && excluded.includes(slot.id);
+    },
+  );
   delete plan.parameters;
   const pool = (actor.pools ?? actor.actions)?.find(
     (p) => p.id === plan.poolId,

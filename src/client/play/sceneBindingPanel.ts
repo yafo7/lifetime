@@ -7,15 +7,12 @@ import {
   promoteLegacyAction,
   type BoundAction,
 } from "../../shared/actionBinding";
-import { pointPosition } from "../../shared/motion";
 import { ScenePoints, POINT_MIME } from "../actors/scenePoints";
 import type { Viewport } from "../rendering/viewport";
-import type {
-  PreparedSceneAction,
-  SceneMotionPort,
-} from "../services/sceneMotionPort";
+import type { SceneMotionPort } from "../services/sceneMotionPort";
 import { resources } from "../services/resources";
 import { escape, select } from "../ui";
+import type { ActionPoint } from "../../shared/motion";
 
 /** Play places actor actions in a map. It never authors animation steps. */
 export class SceneBindingPanel {
@@ -23,15 +20,24 @@ export class SceneBindingPanel {
   private actor: Actor | null = null;
   private map: MapResource | null = null;
   private pointId = "";
-  private prepared: PreparedSceneAction | null = null;
-  private version = 0;
-  private key = "";
   private active = false;
+  private mode: "position" | "behavior" = "behavior";
+  private editingBindings = false;
+  private addingAction = false;
+  private editingNavigation = false;
   private busy = false;
+  private selectedActionId: string | null = null;
+  private configuredActionId: string | null = null;
   private markers: ScenePoints;
-  get duration() {
-    return this.prepared?.timings.at(-1)?.end ?? 0;
-  }
+  private pathDraft: {
+    points: ActionPoint[];
+    visible: boolean;
+    place: (id: string, point: ActionPoint) => void;
+    invalid?: Set<string>;
+    selected?: string;
+    choose?: (id: string) => void;
+    remove?: (id: string) => void;
+  } | null = null;
   constructor(
     private host: HTMLElement,
     canvas: HTMLCanvasElement,
@@ -43,12 +49,22 @@ export class SceneBindingPanel {
     this.markers = new ScenePoints(
       canvas,
       view,
-      (id, point) =>
+      (id, point) => {
+        if (this.pathDraft) {
+          this.pathDraft.place(id, point);
+          return;
+        }
         this.edit((c) => {
           c.points[c.points.findIndex((p) => p.id === id)] = point;
-        }),
+        });
+      },
       (id) => {
         this.pointId = id;
+        if (this.pathDraft) {
+          this.pathDraft.choose?.(id);
+          this.syncMarkers();
+          return;
+        }
         this.render();
       },
     );
@@ -58,10 +74,18 @@ export class SceneBindingPanel {
     instance: ActorInstance | null,
     actor: Actor | null,
   ) {
-    if (this.instance !== instance || this.map?.id !== map?.id) {
-      this.version++;
-      this.prepared = null;
+    if (this.instance?.id !== instance?.id || this.map?.id !== map?.id) {
       this.pointId = "";
+      this.editingBindings = this.addingAction = this.editingNavigation = false;
+      this.selectedActionId = null;
+      this.configuredActionId = null;
+    }
+    if (
+      this.configuredActionId !==
+      (instance?.sceneMotion?.selectedActionId ?? null)
+    ) {
+      this.selectedActionId = instance?.sceneMotion?.selectedActionId ?? null;
+      this.configuredActionId = this.selectedActionId;
     }
     this.instance = instance;
     this.map = map;
@@ -83,19 +107,61 @@ export class SceneBindingPanel {
       };
       this.dirty();
     }
-    const key = JSON.stringify([instance, actor?.updatedAt]);
-    if (key !== this.key) {
-      this.version++;
-      this.prepared = null;
-      this.key = key;
-    }
     this.render();
     if (instance)
       void this.port.getGeometry().catch((e) => this.notify(String(e)));
   }
   setActive(active: boolean) {
     this.active = active;
-    this.markers.show(active && !!this.instance);
+    this.syncMarkers();
+  }
+  setPathDraft(value: typeof this.pathDraft) {
+    this.pathDraft = value;
+    this.syncMarkers();
+  }
+  armPathPoint(id: string) {
+    this.markers.arm(id);
+  }
+  private syncMarkers() {
+    this.markers.setRemovalHandler(
+      this.pathDraft?.remove
+        ? (id) => {
+            if (!this.pathDraft?.visible) return;
+            try {
+              this.pathDraft.remove?.(id);
+            } catch (error) {
+              this.notify(
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          }
+        : undefined,
+    );
+    const points =
+      this.pathDraft?.points ?? this.instance?.sceneMotion?.points ?? [];
+    if (!points.some((point) => point.id === this.pointId))
+      this.pointId = points[0]?.id ?? "";
+    this.markers.set(
+      points,
+      this.pathDraft?.selected ?? this.pointId,
+      this.pathDraft?.invalid,
+    );
+    this.markers.show(
+      this.active &&
+        (!!this.instance || !!this.pathDraft) &&
+        (this.pathDraft ? this.pathDraft.visible : this.mode === "position"),
+    );
+  }
+  setMode(mode: "position" | "behavior") {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.render();
+  }
+  selectAction(id: string) {
+    if (!this.instance?.sceneMotion?.actions.some((action) => action.id === id))
+      return;
+    this.selectedActionId = id;
+    this.render();
   }
   private edit(update: (config: SceneMotion) => void) {
     if (!this.instance) return;
@@ -103,8 +169,6 @@ export class SceneBindingPanel {
       this.port.updateConfiguration(this.instance.id, (i) =>
         update(i.sceneMotion!),
       );
-      this.prepared = null;
-      this.version++;
       this.dirty();
       this.render();
     } catch (error) {
@@ -132,7 +196,9 @@ export class SceneBindingPanel {
             `<option value="${escape(p.id)}">${escape(p.name)}${p.ground ? "" : "（待放置）"}</option>`,
         )
         .join("");
-    const selected = c.actions.find((a) => a.id === c.selectedActionId);
+    if (!c.actions.some((action) => action.id === this.selectedActionId))
+      this.selectedActionId = c.selectedActionId;
+    const selected = c.actions.find((a) => a.id === this.selectedActionId);
     const binding = selected && !("plan" in selected) ? selected : null;
     let source = null,
       error = "";
@@ -151,48 +217,45 @@ export class SceneBindingPanel {
       .filter((a) => a.modelRevisionId === this.instance!.modelRevisionId)
       .slice()
       .sort((a, b) => b.createdAt - a.createdAt);
-    this.host.innerHTML = `<div class="panel-heading"><h3>地图与动作绑定</h3><button data-focus class="secondary small">聚焦演员</button></div>
-      <div class="panel-heading"><b>地图标点</b><button data-point-add class="secondary small" ${c.points.length >= 20 ? "disabled" : ""}>＋ 添加点</button></div>
+    this.host.innerHTML = `<section data-binding-position ${this.mode !== "position" ? "hidden" : ""}>
+      <div class="panel-heading"><h3>地图标点</h3><button data-point-add aria-label="添加地图标点" class="secondary small" ${c.points.length >= 20 ? "disabled" : ""}>＋</button></div>
       <div class="scene-point-list">${c.points.map((p) => `<button data-point="${escape(p.id)}" class="secondary small ${p.id === this.pointId ? "active" : ""}" draggable="true">${escape(p.name)}</button>`).join("")}</div>
-      ${
-        point
-          ? `<div class="toolbar-actions"><button data-place class="secondary small">放置 ${escape(point.name)}</button><button data-point-delete class="secondary small">删除点</button></div><p class="lifetime-help">${
-              point.ground
-                ? pointPosition(point)
-                    .map((n) => n.toFixed(2))
-                    .join("，")
-                : "点击放置后点击地图，或拖入地图表面。"
-            }</p><label class="lifetime-field"><span>离面高度</span><input data-offset type="number" min="0" step=".1" value="${point.height}" aria-label="场景标点离面高度"/></label>`
-          : ""
-      }
-      <label class="lifetime-field"><span>角色初始站位</span><select data-origin aria-label="动作起始站位"><option value="">演员设计位置</option>${c.points
+      ${point ? `<div class="point-detail"><label class="lifetime-field"><span>${escape(point.name)} · 向上高度</span><input data-offset type="number" min="0" step=".1" value="${point.height}" aria-label="场景标点离面高度"/></label><div class="toolbar-actions"><button data-place class="secondary small">重新定位</button><button data-point-delete class="secondary small">删除点</button></div></div>` : "<p class='lifetime-help'>添加点后，点击地图表面定位。</p>"}
+      <label class="lifetime-field"><span>初始站位</span><select data-origin aria-label="动作起始站位"><option value="">角色位置</option>${c.points
         .filter((p) => p.ground)
         .map(
           (p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`,
         )
         .join("")}</select></label>
-      ${legacy ? `<p class="lifetime-help">旧演出仍可播放。先将内嵌动作归入演员层，再编辑地图绑定；原动作顺序与状态引用保留。</p><button data-promote class="secondary" ${this.busy ? "disabled" : ""}>${this.busy ? "迁移中…" : "将旧动作归入演员库"}</button>` : `<label class="lifetime-field"><span>演员层动作库</span><select data-source-action aria-label="选择演员层动作"><option value="">选择完整动作</option>${library.map((a) => `<option value="${escape(a.id)}">${escape(a.name)}</option>`).join("")}</select></label><button data-bind-add class="secondary small">＋ 加入地图动作</button><p class="lifetime-help">动画与动作在 Actors 制作，这里只绑定地图位置。</p>`}
-      <label class="lifetime-field"><span>地图动作</span><select data-action aria-label="地图动作选择"><option value="">未选择</option>${c.actions.map((a) => `<option value="${escape(a.id)}">${escape(a.name)}</option>`).join("")}</select></label>
+    </section>
+    <section data-binding-behavior ${this.mode !== "behavior" ? "hidden" : ""}>
+      <div class="panel-heading"><h3>完整动作</h3><button data-toggle-add-action aria-label="添加完整动作" class="secondary small">＋</button></div>
+      ${legacy ? `<button data-promote class="secondary">${this.busy ? "整理中…" : "将旧动作归入演员库"}</button>` : ""}
+      <div data-add-action-form ${this.addingAction ? "" : "hidden"}><label class="lifetime-field"><span>从演员动作库添加</span><select data-source-action aria-label="选择演员层动作"><option value="">选择完整动作</option>${library.map((a) => `<option value="${escape(a.id)}">${escape(a.name)}</option>`).join("")}</select></label><button data-bind-add class="secondary small">添加动作</button></div>
+      <label class="lifetime-field"><span>所选动作</span><b class="inspected-action-name">${escape(selected?.name ?? "在左侧选择动作")}</b><select data-action aria-label="地图动作选择" hidden><option value="">选择动作</option>${c.actions.map((a) => `<option value="${escape(a.id)}">${escape(a.name)}</option>`).join("")}</select></label>
       ${
         binding
-          ? `<label class="lifetime-field"><span>地图动作名称</span><input data-binding-name aria-label="地图动作名称" value="${escape(binding.name)}"/></label><p class="lifetime-help">来源：${escape(source?.name ?? "缺失动作")}。${source ? source.plan.steps.length + " 个内部步骤，由演员层定义。" : escape(error)}</p>
+          ? `<div class="toolbar-actions"><button data-edit-bindings class="secondary small">${this.editingBindings ? "收起位置绑定" : "调整位置绑定"}</button></div><div data-bindings-form ${this.editingBindings ? "" : "hidden"}>
+      <input data-binding-name aria-label="地图动作名称" value="${escape(binding.name)}"/>
       ${
         source
-          ? `<p class="lifetime-help">${escape(source.prompt.slice(0, 240))}</p>${source.updatedAt !== binding.actorActionUpdatedAt ? '<p class="action-error">演员动作已修改，请更新引用并检查绑定。</p><button data-binding-refresh class="secondary small">更新动作引用</button>' : ""}${
-              actionInputs(source)
-                .map(
-                  (slot) =>
-                    `<label class="lifetime-field"><span>${escape(slot.name)} → 地图点</span><select data-binding="${escape(slot.id)}" aria-label="动作输入 ${escape(slot.name)}">${pointOptions}</select></label>`,
-                )
-                .join("") ||
-              '<p class="lifetime-help">此动作无需位置输入，在当前站位执行。</p>'
-            }`
-          : ""
-      }<button data-binding-delete class="secondary small">移除此地图动作</button>`
+          ? actionInputs(source)
+              .map(
+                (slot) =>
+                  `<label class="lifetime-field"><span>${escape(slot.name)} 的位置</span><select data-binding="${escape(slot.id)}" aria-label="动作输入 ${escape(slot.name)}">${pointOptions}</select></label>`,
+              )
+              .join("")
           : ""
       }
-      <details><summary>角色通行尺寸</summary><div class="transform-grid">${(["radius", "height", "climb", "slope"] as const).map((key, index) => `<label class="lifetime-field"><span>${["半径", "高度", "台阶高度", "最大坡度"][index]}</span><input data-nav="${key}" aria-label="导航 ${key}" type="number" step=".05" value="${c.navigation[key]}"/></label>`).join("")}</div><button data-nav-apply class="secondary small">应用通行参数</button></details>
-      <div class="toolbar-actions"><button data-route class="secondary">检查路线</button><button data-preview class="secondary">预览所选动作</button><button data-reset class="secondary small">停止复位</button></div><p data-scene-status class="lifetime-help" role="status"></p>`;
+      <button data-binding-delete class="secondary small">移除此动作</button></div>
+      ${!source ? `<p class="action-error">${escape(error)}</p>` : source.updatedAt !== binding.actorActionUpdatedAt ? '<p class="action-error">源动作已更新</p><button data-binding-refresh class="secondary small">更新动作引用</button>' : ""}`
+          : ""
+      }
+    </section>
+    <label class="lifetime-field"><span>移动能力</span><select data-traversal-mode aria-label="NPC 移动能力"><option value="ground" ${c.traversal?.fly ? "" : "selected"}>行走与跳跃</option><option value="fly" ${c.traversal?.fly ? "selected" : ""}>行走、跳跃与飞行</option></select></label>
+    <p class="lifetime-help">先寻路，必要时跳跃；允许飞行后可到达空间点。播放时自动补齐缺少的导航动画并存入演员库。</p>
+    <button data-toggle-nav class="secondary small" ${this.mode !== "position" ? "hidden" : ""}>调整通行能力</button>
+    <div data-navigation-form ${this.editingNavigation && this.mode === "position" ? "" : "hidden"}><div class="transform-grid">${(["radius", "height", "climb", "slope"] as const).map((key, i) => `<label class="lifetime-field"><span>${["半径", "高度", "台阶高度", "最大坡度"][i]}</span><input data-nav="${key}" aria-label="导航 ${key}" type="number" step=".05" value="${c.navigation[key]}"/></label>`).join("")}</div><button data-nav-apply class="secondary small">应用</button></div><p data-scene-status class="lifetime-help" role="status" hidden></p>`;
     const on = (query: string, work: () => void | Promise<void>) => {
       const b = this.host.querySelector<HTMLElement>(query);
       if (b)
@@ -204,7 +267,29 @@ export class SceneBindingPanel {
             );
         };
     };
-    on("[data-focus]", () => this.view.focusInstance(this.instance!.id));
+    const traversal = select<HTMLSelectElement>(
+      this.host,
+      "[data-traversal-mode]",
+    );
+    traversal.onchange = () =>
+      this.edit((config) => {
+        config.traversal = {
+          ...config.traversal,
+          fly: traversal.value === "fly",
+        };
+      });
+    on("[data-toggle-add-action]", () => {
+      this.addingAction = !this.addingAction;
+      this.render();
+    });
+    on("[data-edit-bindings]", () => {
+      this.editingBindings = !this.editingBindings;
+      this.render();
+    });
+    on("[data-toggle-nav]", () => {
+      this.editingNavigation = !this.editingNavigation;
+      this.render();
+    });
     on("[data-point-add]", () => {
       const id = crypto.randomUUID();
       this.pointId = id;
@@ -256,7 +341,7 @@ export class SceneBindingPanel {
         c.startPointId = origin.value || null;
       });
     const action = select<HTMLSelectElement>(this.host, "[data-action]");
-    action.value = c.selectedActionId ?? "";
+    action.value = this.selectedActionId ?? "";
     action.onchange = () =>
       this.edit((c) => {
         c.selectedActionId = action.value || null;
@@ -268,6 +353,8 @@ export class SceneBindingPanel {
         ).value,
         source = library.find((a) => a.id === id);
       if (!source) throw new Error("请选择演员层已经保存的完整动作");
+      this.addingAction = false;
+      this.editingBindings = true;
       this.port.bindAction(this.instance!.id, source.id);
     });
     const name = this.host.querySelector<HTMLInputElement>(
@@ -289,6 +376,10 @@ export class SceneBindingPanel {
             )! as BoundAction;
             if (input.value) a.bindings[input.dataset.binding!] = input.value;
             else delete a.bindings[input.dataset.binding!];
+            if (input.value && a.excludedRouteInputs)
+              a.excludedRouteInputs = a.excludedRouteInputs.filter(
+                (id) => id !== input.dataset.binding,
+              );
           });
       });
     on("[data-binding-refresh]", () =>
@@ -299,6 +390,7 @@ export class SceneBindingPanel {
           Object.entries(a.bindings).filter(([k]) => valid.has(k)),
         );
         a.actorActionUpdatedAt = source!.updatedAt;
+        delete a.excludedRouteInputs;
       }),
     );
     on("[data-binding-delete]", () =>
@@ -318,30 +410,9 @@ export class SceneBindingPanel {
           ).valueAsNumber;
       }),
     );
-    on("[data-route]", async () => {
-      const p = await this.prepare();
-      if (p) this.view.showSceneGuide(p.instanceId, p.runtime.getTrajectory());
-    });
-    on("[data-preview]", () => this.preview());
-    on("[data-reset]", () => this.port.cancelExecution(this.instance!.id));
     on("[data-promote]", () => this.promote());
-    this.markers.set(c.points, this.pointId);
-    this.markers.show(this.active);
+    this.syncMarkers();
     this.status();
-  }
-  private async prepare() {
-    if (!this.instance) throw new Error("请选择角色");
-    const version = this.version,
-      id = this.instance.id,
-      p = await this.port.prepareAction(id);
-    if (version !== this.version || this.instance?.id !== id) return null;
-    this.prepared = p;
-    this.status();
-    return p;
-  }
-  async preview() {
-    const p = await this.prepare();
-    if (p) this.port.startPrepared(p);
   }
   private async promote() {
     if (!this.instance || !this.actor || this.busy) return;
@@ -386,12 +457,10 @@ export class SceneBindingPanel {
     const state = this.port.getExecutionState(this.instance.id);
     node.textContent = state
       ? `${state.status === "running" ? "播放中" : state.status === "paused" ? "已暂停" : state.status === "completed" ? "已完成" : "已停止"} · ${state.elapsed.toFixed(2)} / ${state.duration.toFixed(2)} 秒`
-      : this.prepared
-        ? `路线已检查 · ${this.duration.toFixed(2)} 秒`
-        : "绑定地图点后可以检查路线或直接播放。";
+      : "";
+    node.hidden = !node.textContent;
   }
   dispose() {
-    this.version++;
     this.markers.dispose();
   }
 }

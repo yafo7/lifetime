@@ -13,6 +13,7 @@ import type { NavigationProfile } from "../../shared/sceneMotion";
 import { resources } from "../services/resources";
 import { planScene } from "./planner";
 import { assembleScene, type AssembledScene } from "./performanceAssembler";
+import type { AssemblyDraft } from "../../shared/sceneBuild";
 
 export interface SceneBuildRecord {
   schemaVersion: 1;
@@ -26,6 +27,7 @@ export interface SceneBuildRecord {
   status: string;
   plan?: ScenePlan;
   result?: AssembledScene;
+  assembly?: AssemblyDraft;
   savedActions: string[];
   performanceId?: string;
   error?: string;
@@ -40,6 +42,9 @@ export interface BuildContext {
   navigation: (p: NavigationProfile) => Promise<Navigation>;
   current: () => boolean;
   climb: number;
+  assembly?: AssemblyDraft;
+  checkpoint?: (draft: AssemblyDraft) => Promise<void>;
+  publish?: boolean;
 }
 export interface BuildStorage {
   read(): SceneBuildRecord | null;
@@ -183,6 +188,12 @@ export class SceneBuildCoordinator {
           request: record.request,
           geometry,
           signal,
+          draft: context.assembly ?? record.assembly,
+          checkpoint: async (draft) => {
+            record.assembly = draft;
+            this.publish();
+            await context.checkpoint?.(draft);
+          },
           stage: (status) => {
             record.status = status;
             this.publish();
@@ -190,6 +201,11 @@ export class SceneBuildCoordinator {
         });
         check();
         this.publish();
+      }
+      if (context.publish === false) {
+        record.status = "地图检查通过，待完成并发布";
+        this.publish();
+        return record.result.performance;
       }
       record.phase = "saving";
       record.status = "正在保存演员动作与演出";

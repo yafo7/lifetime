@@ -26,8 +26,6 @@ import {
   type AnimationEdit,
 } from "../motion/editing";
 import type { MotionOrigin } from "../motion/runtime";
-import { createActionTemplate } from "../../shared/actionTemplates";
-import { mountActionTemplatePanel } from "./actionTemplatePanel";
 
 interface State {
   actionId: string;
@@ -211,7 +209,7 @@ export class ActionPanel {
       .filter((a) => a.modelRevisionId === this.revision)
       .slice()
       .sort((a, b) => b.createdAt - a.createdAt);
-    this.library.innerHTML = `<div class="panel-heading"><h2><button class="library-title" data-open>动作库</button></h2><button class="small" data-new ${!this.revision ? "disabled" : ""}>＋ 新建</button></div><div class="clip-list library-scroll">${actions.map((a) => `<button class="clip-item ${st.actionId === a.id ? "active" : ""}" data-action="${escape(a.id)}"><b>${escape(a.name)}</b><small>${a.plan.steps.length} 个步骤</small></button>`).join("") || '<p class="empty-state">用文字和地图标点创建动作。</p>'}</div>`;
+    this.library.innerHTML = `<div class="panel-heading"><h2><button class="library-title" data-open>动作库</button></h2><button class="small" data-new ${!this.revision ? "disabled" : ""}>＋ 新建</button></div><div class="clip-list library-scroll">${actions.map((a) => `<button class="clip-item ${st.actionId === a.id ? "active" : ""}" data-action="${escape(a.id)}"><b>${escape(a.name)}</b></button>`).join("") || '<p class="empty-state">用文字和地图标点创建动作。</p>'}</div>`;
     select<HTMLButtonElement>(this.library, "[data-open]").onclick = () =>
       this.enter();
     select<HTMLButtonElement>(this.library, "[data-new]").onclick = () => {
@@ -272,19 +270,25 @@ export class ActionPanel {
     this.editor.innerHTML = `
       <section class="action-authoring-section"><label id="action-prompt-label">文本指导</label>
         <div data-prompt class="point-prompt" role="textbox" aria-labelledby="action-prompt-label" aria-multiline="true" contenteditable="true" data-placeholder="拖入动画和标点，例如：从 p1 用行走到 p2，再播放后空翻。输入 @ 引用标点。"></div>
-        <p class="lifetime-help">蓝色为标点，紫色为动画。可直接从左侧动画库拖入。</p>
+
       </section>
       <section class="action-authoring-section"><div class="panel-heading"><h3>地图标点</h3><button data-add-point class="small" aria-label="添加地图标点" ${!this.ready || st.points.length >= 20 ? "disabled" : ""}>＋</button></div>
-        <p class="lifetime-help">拖到模型表面或地面定位，拖入文字引用。选中后拖动 ↑ 调高，靠近上表面会吸附；按住 Alt 自由调高。</p>
-        <div class="point-list">${st.points.map((p) => `<div class="point-row ${st.selected === p.id ? "selected" : ""}" data-point="${p.id}"><button class="point-token point-drag" draggable="true" data-drag="${p.id}" title="拖入预览放置，或拖入文本引用">${escape(p.name)}</button><label>${p.offsetMode === "normal" ? "离面距离" : "向上高度"}<input type="number" min="0" max="100" step="0.1" data-height="${p.id}" aria-label="${p.name} 偏移距离" value="${p.height}"/></label><button class="small" data-place="${p.id}">${p.ground ? "重新放置" : "放置"}</button><button class="small" data-insert="${p.id}">插入</button><button class="point-delete" data-delete="${p.id}" aria-label="删除 ${p.name}">×</button><small>${p.ground ? (p.surface ? "已吸附模型表面" : "地面 / 空间点") : "未放置 · 拖到预览中"}</small>${p.surface && st.selected === p.id ? `<select data-offset="${p.id}" aria-label="${p.name} 偏移方向"><option value="up" ${p.offsetMode !== "normal" ? "selected" : ""}>向上高度</option><option value="normal" ${p.offsetMode === "normal" ? "selected" : ""}>离面距离</option></select>` : ""}</div>`).join("") || '<p class="empty-state">点击 ＋ 添加 p1，然后拖入预览画面。</p>'}</div>
+        <p class="lifetime-help">拖入预览定位，拖入文字引用。</p>
+        <div class="point-list compact-points">${st.points.map((p) => `<button class="point-token point-drag ${st.selected === p.id ? "selected" : ""}" draggable="true" data-drag="${p.id}" title="拖入预览定位或文本引用">${escape(p.name)}</button>`).join("") || ""}</div>
+        ${st.points
+          .filter((p) => p.id === st.selected)
+          .map(
+            (p) =>
+              `<div class="point-detail"><label class="lifetime-field"><span>${escape(p.name)} · ${p.offsetMode === "normal" ? "离面距离" : "向上高度"}</span><input type="number" min="0" max="100" step=".1" data-height="${p.id}" aria-label="${p.name} 偏移距离" value="${p.height}"/></label><div class="toolbar-actions"><button class="secondary small" data-place="${p.id}">${p.ground ? "重新定位" : "放置"}</button><button class="secondary small" data-insert="${p.id}">引用</button><button class="secondary small" data-delete="${p.id}" aria-label="删除 ${p.name}">删除</button></div>${p.surface ? `<select data-offset="${p.id}" aria-label="${p.name} 偏移方向"><option value="up" ${p.offsetMode !== "normal" ? "selected" : ""}>向上高度</option><option value="normal" ${p.offsetMode === "normal" ? "selected" : ""}>离面距离</option></select>` : ""}</div>`,
+          )
+          .join("")}
       </section>
       <div class="toolbar-actions"><button data-generate class="lifetime-primary" ${!hasAnimations || !this.ready || st.busy ? "disabled" : ""}>${st.busy ? "正在生成…" : "生成动作"}</button>${st.busy ? '<button data-cancel class="small">取消</button>' : ""}</div>
-      <div data-action-template></div>
       ${!hasAnimations ? '<p class="lifetime-help">先在动画库中生成当前模型可用的动画。</p>' : ""}
-      <p class="action-summary" data-summary>${escape(st.dirty ? "文本已修改，请重新生成动作。" : this.summary())}</p>
+      <p class="action-summary" data-summary>${escape(st.dirty ? "文本已修改，请重新生成动作。" : "")}</p>
       ${st.plan ? `<label class="lifetime-field"><span>动作名称</span><input data-action-name aria-label="演员动作名称" value="${escape(st.plan.name)}" maxlength="100"/></label>` : ""}
       ${st.modified ? '<p class="lifetime-help">动作修改尚未保存。重新生成会覆盖这些修改。</p>' : ""}
-      <div class="toolbar-actions"><button data-preview class="lifetime-primary" ${!st.plan || st.dirty || !this.ready || st.busy ? "disabled" : ""}>预览</button><button data-save ${!st.plan || st.dirty || st.busy ? "disabled" : ""}>保存动作</button></div>
+      <div class="toolbar-actions"><button data-save ${!st.plan ? "hidden" : ""} ${!st.plan || st.dirty || st.busy ? "disabled" : ""}>保存动作</button></div>
       <p class="action-error" role="status">${escape(st.error)}</p><p class="lifetime-help" data-execution></p>`;
     this.composer = new PointPrompt(
       select(this.editor, "[data-prompt]"),
@@ -293,8 +297,6 @@ export class ActionPanel {
       (doc) => {
         st.document = doc;
         st.dirty = !!st.plan;
-        select<HTMLButtonElement>(this.editor, "[data-preview]").disabled =
-          true;
         select<HTMLButtonElement>(this.editor, "[data-save]").disabled = true;
         select(this.editor, "[data-summary]").textContent = st.dirty
           ? "文本已修改，请重新生成动作。"
@@ -396,7 +398,6 @@ export class ActionPanel {
     );
     this.on("[data-generate]", () => this.generate());
     if (st.busy) this.on("[data-cancel]", () => this.abort());
-    this.on("[data-preview]", () => this.preview());
     this.on("[data-save]", () => this.save());
     const actionName =
       this.editor.querySelector<HTMLInputElement>("[data-action-name]");
@@ -410,32 +411,6 @@ export class ActionPanel {
           this.port.invalidateAction();
           this.render();
         });
-    if (hasAnimations && this.ready && !st.busy)
-      mountActionTemplatePanel(
-        select(this.editor, "[data-action-template]"),
-        this.actor!,
-        this.revision,
-        (kind, move, performances) =>
-          this.run(() => {
-            const draft = createActionTemplate(
-              this.actor!,
-              this.revision,
-              kind,
-              move,
-              performances,
-              st.points,
-            );
-            this.abort();
-            this.port.invalidateAction();
-            this.state = {
-              ...empty(),
-              ...draft,
-              selected: draft.points[0]?.id ?? "",
-            };
-            this.states.set(this.key, this.state);
-            this.render();
-          }),
-      );
     this.renderTimeline();
     this.status();
   }
@@ -581,38 +556,6 @@ export class ActionPanel {
     if (this.state.dirty) throw new Error("文本已修改，请重新生成动作");
     if (this.state.points.some((p) => !p.ground))
       throw new Error("请先将所有标点放置到场景");
-  }
-  private summary(): string {
-    const p = this.state.plan;
-    if (!p) return "";
-    const target = (t: any): string =>
-      Array.isArray(t)
-        ? "指定位置"
-        : t.point
-          ? (this.state.points.find((p) => p.id === t.point)?.name ??
-            "失效标点")
-          : t.context
-            ? "动作起点"
-            : "目标点";
-    const clipName = (use: any) =>
-      this.actor?.animations.find((c) => c.id === use?.clipId)?.name ??
-      this.ctx().pool?.entries?.find((e) => e.slot === use?.slot)?.slot ??
-      use?.slot ??
-      "动画";
-    return [
-      ...(p.start ? [`起点 ${target(p.start)}`] : []),
-      ...p.steps.map((s) =>
-        s.type === "moveTo"
-          ? `${s.animation ? clipName(s.animation) : "移动"}至 ${target(s.destination)}`
-          : s.type === "playClip"
-            ? s.animation
-              ? `${clipName(s.animation)}${s.animation.repeat && s.animation.repeat !== 1 ? ` × ${s.animation.repeat}` : "一次"}`
-              : `空卡槽 ${s.seconds?.toFixed(2)} 秒`
-            : s.type === "wait"
-              ? `等待 ${s.seconds} 秒`
-              : "转向",
-      ),
-    ].join(" → ");
   }
   status(): void {
     const box = this.editor.querySelector("[data-execution]");
