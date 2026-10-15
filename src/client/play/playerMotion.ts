@@ -28,6 +28,7 @@ export class PlayerMotion {
     heading = 0,
     readonly jumpDuration = 1.1,
     private ceiling: (ground: Vec3) => number = () => Infinity,
+    private canMove: (from: Vec3, to: Vec3) => boolean = () => true,
   ) {
     this.support = [...start];
     this.position = [...start];
@@ -58,17 +59,15 @@ export class PlayerMotion {
       step = dt / count;
     let distance = 0;
     for (let i = 0; i < count; i++) {
-      const previous = this.support;
+      const previous = this.support,
+        previousPosition: Vec3 = [...this.position],
+        wasAirborne = this.airborne;
       if (x || z)
         this.support = this.surface.move(previous, [
           previous[0] + x * this.speed * step,
           previous[1],
           previous[2] + z * this.speed * step,
         ]);
-      distance += Math.hypot(
-        this.support[0] - previous[0],
-        this.support[2] - previous[2],
-      );
       this.position[0] = this.support[0];
       this.position[2] = this.support[2];
       if (this.airborne) {
@@ -87,6 +86,21 @@ export class PlayerMotion {
           this.airborne = false;
         }
       } else this.position[1] = this.support[1];
+      if (!this.canMove(previousPosition, this.position)) {
+        // Keep gravity/jump progress when horizontal movement hits an NPC.
+        this.support = previous;
+        this.position[0] = previousPosition[0];
+        this.position[2] = previousPosition[2];
+        if (!this.canMove(previousPosition, this.position)) {
+          this.position = previousPosition;
+          this.velocity = 0;
+          this.airborne = wasAirborne;
+        }
+      }
+      distance += Math.hypot(
+        this.position[0] - previousPosition[0],
+        this.position[2] - previousPosition[2],
+      );
     }
     this.moving = distance > 0.0001;
     if (length > 0.01) this.heading = Math.atan2(x, z);

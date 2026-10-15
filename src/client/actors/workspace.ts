@@ -14,6 +14,7 @@ import { escape, select, button } from "../ui";
 
 import { MotionPort } from "../services/motionPort";
 import { ActionPanel } from "./actionPanel";
+import { generationDefaults } from "../../shared/generationDefaults";
 
 interface Draft {
   modelPrompt: string;
@@ -28,10 +29,10 @@ interface Draft {
 const emptyDraft = (): Draft => ({
   modelPrompt: "",
   animationPrompt: "",
-  modelProvider: "gpt",
-  animationProvider: "gpt",
-  modelMode: "voxel-pro",
-  animationMode: "quick",
+  modelProvider: generationDefaults.provider,
+  animationProvider: generationDefaults.provider,
+  modelMode: generationDefaults.modelMode,
+  animationMode: generationDefaults.animationMode,
   revisionId: "",
   clipId: "",
 });
@@ -149,7 +150,7 @@ export class ActorsWorkspace {
               <input data-model-provider type="hidden" value="gpt" /><input
                 data-model-mode
                 type="hidden"
-                value="voxel-pro"
+                value="${generationDefaults.modelMode}"
               />
               <button data-generate-model class="lifetime-primary">
                 生成模型

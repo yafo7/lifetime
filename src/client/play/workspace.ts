@@ -30,6 +30,7 @@ import { removeScenePathPoint } from "../../shared/scenePathEditing";
 import { TraversalAssets } from "../services/traversalAssets";
 import { TraversalClearance } from "../navigation/traversalClearance";
 import { TraversalPlanner, jumpArc } from "../navigation/traversalPlanner";
+import { bodiesOverlap } from "../navigation/characterCollision";
 
 declare global {
   interface Window {
@@ -1119,15 +1120,19 @@ export class PlayWorkspace {
       if (!node) continue;
       const state = this.motion.getMachineState(i.id),
         rules = i.sceneMotion?.machine;
+      const execution = this.motion.getExecutionState(i.id);
       const name =
         rules?.states.find((s) => s.id === state?.stateId)?.name ?? "";
-      node.textContent = state
-        ? `${name} · ${{ starting: "准备中", running: "执行中", waiting: "等待中", paused: "已暂停", completed: "已完成", stopped: "已停止", failed: "失败" }[state.status]}`
-        : rules?.enabled
-          ? ""
-          : i.clipId
-            ? ""
-            : "";
+      node.textContent =
+        execution?.status === "running" && execution.blocked
+          ? `${name ? `${name} · ` : ""}等待前方角色让行`
+          : state
+            ? `${name} · ${{ starting: "准备中", running: "执行中", waiting: "等待中", paused: "已暂停", completed: "已完成", stopped: "已停止", failed: "失败" }[state.status]}`
+            : rules?.enabled
+              ? ""
+              : i.clipId
+                ? ""
+                : "";
     }
   }
   private editInstance(): void {
@@ -1308,14 +1313,20 @@ export class PlayWorkspace {
     if (!this.active || this.map?.id !== mapId)
       throw new Error("地图或工作区已切换，请重新进入");
     const map = this.map.map;
-    const occupied = this.draft?.instances.map((i) => i.position) ?? [];
+    const occupied = this.motion.getCollisionBodies();
     const preferred = getSpawnPoints(map);
     let spawn: Vec3 | null = null;
     const tryPoint = (x: number, z: number) => {
       const p = nav.nearest([x, sampleTerrainHeight(map, x, z), z], 1.5, 0.6);
       if (
         p &&
-        occupied.every((o) => Math.hypot(o[0] - p[0], o[2] - p[2]) > 2.5)
+        occupied.every(
+          (o) =>
+            !bodiesOverlap(
+              { id: "temporary-player", position: p, ...profile },
+              o,
+            ),
+        )
       )
         spawn = p;
     };

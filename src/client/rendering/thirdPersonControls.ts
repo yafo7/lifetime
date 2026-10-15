@@ -26,6 +26,7 @@ export class ThirdPersonControls {
     heading: number,
     jumpDuration: number,
     private exit: () => void,
+    canMove: (from: Vec3, to: Vec3) => boolean = () => true,
   ) {
     this.yaw = heading + Math.PI;
     this.oldPosition = camera.position.clone();
@@ -48,6 +49,7 @@ export class ThirdPersonControls {
         const hit = this.ray.intersectObject(geometry.root, true)[0];
         return hit ? Math.max(ground[1], hit.point.y - 2.05) : Infinity;
       },
+      canMove,
     );
     canvas.tabIndex = 0;
     canvas.addEventListener("pointerdown", this.down);

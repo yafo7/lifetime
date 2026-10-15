@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { generationDefaults } from "../../shared/generationDefaults";
 import type {
   Actor,
   ActorInstance,
@@ -601,8 +602,8 @@ export class SceneGenerationService {
         if (task.kind === "model") {
           value = await (this.options.model ?? generateModel)(
             (role.model as { description: string }).description,
-            "gpt",
-            "voxel-pro",
+            generationDefaults.provider,
+            generationDefaults.modelMode,
             options,
           );
         } else {
@@ -620,7 +621,7 @@ export class SceneGenerationService {
           value = await (this.options.animation ?? generateAnimation)(
             model.modelJson,
             requirement.description,
-            "gpt",
+            generationDefaults.provider,
             requirement.mode,
             options,
           );
@@ -647,8 +648,8 @@ export class SceneGenerationService {
           id: assets.modelRevisionId,
           createdAt,
           prompt: task.description,
-          provider: "gpt",
-          mode: "voxel-pro",
+          provider: generationDefaults.provider,
+          mode: generationDefaults.modelMode,
           modelJson: value.modelJson,
           metadata: value,
         };
@@ -684,7 +685,7 @@ export class SceneGenerationService {
           name: task.name,
           createdAt,
           prompt: task.description,
-          provider: "gpt",
+          provider: generationDefaults.provider,
           mode: requirement.mode,
           modelRevisionId: model.id,
           ...decoded,

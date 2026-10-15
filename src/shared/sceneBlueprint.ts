@@ -5,6 +5,7 @@ import type {
   SceneStep,
 } from "./scenePlan";
 import { validateScenePlan } from "./scenePlan";
+import { generationDefaults } from "./generationDefaults";
 
 export type ModelRequirement =
   | { source: "existing"; actorId: string; modelRevisionId: string }
@@ -110,6 +111,7 @@ export function validateBlueprint(
   value: unknown,
   catalogue: SceneCatalogue,
 ): SceneBlueprint {
+  value = structuredClone(value);
   const root = object(value, [
     "schemaVersion",
     "name",
@@ -225,6 +227,7 @@ export function validateBlueprint(
           "loop",
         ]);
         text(animation.description, 4000);
+        animation.mode ??= generationDefaults.animationMode;
         if (
           !["quick", "pro"].includes(String(animation.mode)) ||
           typeof animation.loop !== "boolean"

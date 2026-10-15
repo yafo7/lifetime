@@ -44,12 +44,14 @@ export class LocationResolver {
   private anchors = new Map<string, ActionPoint | null>();
   private goals: Candidate[][] = [];
   private goalScores = new Map<string, number>();
+  private occupiedCandidates = 0;
   constructor(
     private index: SemanticIndex,
     geometry: SceneGeometry,
     private nav: Navigation,
     private signal?: AbortSignal,
     private traversal?: TraversalPlanner,
+    private available: (position: Vec3) => boolean = () => true,
   ) {
     this.surfaces = new SurfacePicker(mapSpace(index.map), false);
     for (const [id, group] of geometry.objects)
@@ -141,7 +143,12 @@ export class LocationResolver {
     this.check();
     const raw = this.nav
       .candidates(min, max, preferred)
-      .filter(keep)
+      .filter((p) => {
+        if (!keep(p)) return false;
+        if (this.available(p)) return true;
+        this.occupiedCandidates++;
+        return false;
+      })
       .sort(
         (a, b) => score(a) - score(b) || pointKey(a).localeCompare(pointKey(b)),
       );
@@ -171,7 +178,7 @@ export class LocationResolver {
       if (!point || !accept(point)) continue;
       const value = pointPosition(point),
         key = pointKey(value);
-      if (!keep(value) || seen.has(key)) continue;
+      if (!keep(value) || !this.available(value) || seen.has(key)) continue;
       seen.add(key);
       out.push({ position: value, point, score: score(value) });
       if (out.length === 64) break;
@@ -196,8 +203,12 @@ export class LocationResolver {
   private choose(f: SpatialFeature, candidates: Candidate[]): ActionPoint {
     if (!candidates.length)
       this.failure(
-        "NO_STANDING_SURFACE",
-        `${f.semantic.name}的目标区域内未找到满足角色尺寸、坡度和净空的支撑面${f.semantic.kind === "building" ? "；中央要求仅搜索低处地板，不以屋顶或建筑外替代" : ""}`,
+        this.occupiedCandidates
+          ? "CHARACTER_SPACE_OCCUPIED"
+          : "NO_STANDING_SURFACE",
+        this.occupiedCandidates
+          ? `${f.semantic.name}的可站立区域没有足够的角色间距；请调整站位或减少该区域人数`
+          : `${f.semantic.name}的目标区域内未找到满足角色尺寸、坡度和净空的支撑面${f.semantic.kind === "building" ? "；中央要求仅搜索低处地板，不以屋顶或建筑外替代" : ""}`,
       );
     const ranked = candidates
       .flatMap((c) => {
@@ -518,6 +529,7 @@ export class LocationResolver {
     // Allow progress rendering and cancellation between bounded region queries.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     this.from = from;
+    this.occupiedCandidates = 0;
     this.check();
     const f = this.index.features.get(intent.featureId);
     if (!f || !f.semantic.queries.includes(intent.relation))
@@ -621,6 +633,11 @@ export class LocationResolver {
       throw new Error("请放置这个地点的标点");
     if (location.intent.relation === "facing") return;
     for (const p of location.points) {
+      if (!this.available(pointPosition(p)))
+        throw new MotionError(
+          "CHARACTER_SPACE_OCCUPIED",
+          "该站位与其他角色重叠，请调整标点并保留角色间距",
+        );
       if (this.traversal) this.traversal.assertStationary(pointPosition(p));
       else this.nav.project(pointPosition(p));
     }

@@ -20,6 +20,10 @@ import type { Actor, Performance } from "../src/shared/contracts";
 import type { MapResource } from "../src/shared/maps";
 import type { AssemblyDraft } from "../src/shared/sceneBuild";
 import { pointPosition } from "../src/shared/motion";
+import {
+  bodiesOverlap,
+  characterBody,
+} from "../src/client/navigation/characterCollision";
 
 import {
   sceneActor,
@@ -29,6 +33,95 @@ import {
   assemblyFixture,
 } from "./sceneFixtures";
 describe("semantic scene planning", () => {
+  it("allocates six independent waiting NPCs at one semantic place, preserves existing NPCs, and restores separated checkpoints", async () => {
+    const f = await assemblyFixture();
+    let draft: AssemblyDraft | undefined;
+    try {
+      const plan = scenePlan();
+      const waiting = {
+        ...plan.actors[0],
+        key: "servant1",
+        name: "仆人1",
+        origin: "door",
+        locations: [
+          {
+            key: "door",
+            featureId: "object:bridge",
+            relation: "near" as const,
+          },
+        ],
+        actions: [
+          {
+            key: "wait",
+            name: "门口等候",
+            steps: [{ type: "wait" as const, seconds: 2 }],
+          },
+        ],
+        states: [
+          {
+            key: "wait",
+            name: "等候",
+            action: "wait",
+            repetitions: 1,
+            waitSeconds: 0,
+            next: "wait",
+          },
+        ],
+        initialState: "wait",
+      };
+      plan.actors = [waiting];
+      const first = await assembleScene(plan, f.context),
+        actor = structuredClone(sceneActor);
+      actor.motionActions = first.actions.map((a) => a.action);
+      const preserved = structuredClone(first.performance.instances[0]);
+      plan.actors = Array.from({ length: 5 }, (_, n) => ({
+        ...structuredClone(waiting),
+        key: `servant${n + 2}`,
+        name: `仆人${n + 2}`,
+      }));
+      const context = {
+        ...f.context,
+        base: first.performance,
+        actors: new Map([[actor.id, actor]]),
+        checkpoint: async (value: AssemblyDraft) => {
+          draft = structuredClone(value);
+        },
+      };
+      const result = await assembleScene(plan, context);
+      expect(result.performance.instances).toHaveLength(6);
+      expect(result.performance.instances[0]).toEqual(preserved);
+      const bodies = result.performance.instances.map((i) =>
+        characterBody(i, actor),
+      );
+      for (let a = 0; a < bodies.length; a++)
+        for (let b = a + 1; b < bodies.length; b++)
+          expect(bodiesOverlap(bodies[a], bodies[b])).toBe(false);
+      for (const npc of result.performance.instances) {
+        expect(() => f.nav.project(npc.position)).not.toThrow();
+        expect(npc.sceneMotion!.machine!.states).toHaveLength(1);
+      }
+      const resumed = await assembleScene(plan, { ...context, draft });
+      expect(resumed.performance.instances.map((i) => i.position)).toEqual(
+        result.performance.instances.map((i) => i.position),
+      );
+      const role = draft!.roles.servant2,
+        point = role.locations.door.points[0];
+      point.ground = [...preserved.position];
+      delete point.surface;
+      role.locations.door.manual = true;
+      await expect(
+        assembleScene(plan, { ...context, draft }),
+      ).rejects.toBeInstanceOf(AssemblyNeedsRepair);
+      expect(draft!.roles.servant2.locations.door.state).toBe("needs-repair");
+      expect(
+        draft!.roles.servant2.issues.some(
+          (i) => i.code === "CHARACTER_SPACE_OCCUPIED",
+        ),
+      ).toBe(true);
+    } finally {
+      f.dispose();
+    }
+  });
   it("sends a compact catalogue without model nodes, water vertices, geometry or coordinates", () => {
     const index = buildSemanticIndex(sceneMap),
       catalogue = sceneCatalogue(index.summary, [sceneActor], []),

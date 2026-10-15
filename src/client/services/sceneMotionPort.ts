@@ -38,6 +38,12 @@ import type { TraversalKind } from "../../shared/traversal";
 import { TraversalClearance } from "../navigation/traversalClearance";
 import { TraversalPlanner } from "../navigation/traversalPlanner";
 import { adaptTraversal } from "../navigation/adaptTraversal";
+import {
+  bodiesOverlap,
+  canMoveBody,
+  characterBody,
+  type CharacterBody,
+} from "../navigation/characterCollision";
 
 export interface PreparedSceneAction {
   runtime: MotionRuntime;
@@ -75,6 +81,36 @@ export class SceneMotionPort {
   ) => Promise<Actor>;
   constructor(private view: Viewport) {
     view.onSceneFrame = (dt) => this.advance(dt);
+    view.onPlayerMove = (from, to, profile) =>
+      this.canMove({ id: "temporary-player", position: from, ...profile }, to);
+  }
+  /** Current world positions, including paused/idle NPCs; never uses design positions for moving actors. */
+  getCollisionBodies(): CharacterBody[] {
+    return this.instances.map((i) =>
+      characterBody(
+        i,
+        this.actors.get(i.actorId),
+        this.executions.get(i.id)?.runtime.frame?.position ?? i.position,
+      ),
+    );
+  }
+  canMove(body: CharacterBody, to: Vec3): boolean {
+    const bodies = this.getCollisionBodies(),
+      player = this.view.playerCollisionBody;
+    if (player && body.id !== "temporary-player") bodies.push(player);
+    return canMoveBody(body, to, bodies);
+  }
+  private assertStanding(i: ActorInstance, position: Vec3) {
+    const body = characterBody(i, this.actors.get(i.actorId), position),
+      player = this.view.playerCollisionBody;
+    if (
+      this.getCollisionBodies().some((other) => bodiesOverlap(body, other)) ||
+      (player && bodiesOverlap(body, player))
+    )
+      throw new MotionError(
+        "CHARACTER_SPACE_OCCUPIED",
+        "站位与其他角色重叠，请修改位置",
+      );
   }
   bind(
     map: MapResource,
@@ -334,6 +370,7 @@ export class SceneMotionPort {
     const i = this.instance(p.instanceId);
     if (p.signature !== this.signature(i))
       throw new MotionError("STALE_PLAN", "配置已修改，请重新计算动作");
+    this.assertStanding(i, p.origin.position);
     if (fromMachine) {
       this.executions.get(i.id)?.runtime.reset();
       this.executions.delete(i.id);
@@ -370,6 +407,10 @@ export class SceneMotionPort {
     const p = this.executions.get(instanceId),
       state = p?.runtime.getExecutionState();
     if (!p || !state) throw new Error("请先播放动作");
+    this.assertStanding(
+      this.instance(instanceId),
+      p.runtime.positionAt(seconds),
+    );
     this.machines.get(instanceId)?.seekAction();
     p.runtime.seekExecution(state.executionId, seconds);
     this.view.seekSceneFrame(instanceId, p.runtime.frame!);
@@ -558,10 +599,20 @@ export class SceneMotionPort {
     };
   }
   private advance(dt: number) {
-    for (const [id, p] of this.executions) {
-      p.runtime.advance(dt);
-      if (p.runtime.frame) this.view.applySceneFrame(id, p.runtime.frame);
+    // Small interleaved steps prevent fast NPCs tunnelling through others in a long frame.
+    let remaining = dt;
+    while (remaining > 1e-9) {
+      const step = Math.min(remaining, 1 / 30);
+      for (const [id, p] of this.executions) {
+        const i = this.instance(id);
+        p.runtime.advance(step, (from, to) =>
+          this.canMove(characterBody(i, this.actors.get(i.actorId), from), to),
+        );
+      }
+      remaining -= step;
     }
+    for (const [id, p] of this.executions)
+      if (p.runtime.frame) this.view.applySceneFrame(id, p.runtime.frame);
     for (const machine of this.machines.values()) machine.advance(dt);
     if (this.executions.size) this.onChange();
   }
@@ -701,6 +752,7 @@ export class SceneMotionPort {
   dispose() {
     this.clear();
     this.view.onSceneFrame = () => {};
+    this.view.onPlayerMove = () => true;
     this.listeners.clear();
     this.machineListeners.clear();
   }

@@ -150,6 +150,45 @@ async function setup(
 }
 
 describe("durable automatic scene generation", () => {
+  it("defaults to GPT voxel models and GPT quick animations, including omitted blueprint modes", async () => {
+    const plan = blueprint();
+    const raw = structuredClone(plan) as any;
+    for (const requirement of raw.actors[0].animations) delete requirement.mode;
+    const catalogue = sceneCatalogue(
+      buildSemanticIndex(sceneMap).summary,
+      [],
+      [],
+    );
+    const normalized = validateBlueprint(raw, catalogue);
+    expect(
+      normalized.actors[0].animations.every(
+        (a) => a.source !== "generate" || a.mode === "quick",
+      ),
+    ).toBe(true);
+    expect(raw.actors[0].animations[0]).not.toHaveProperty("mode");
+    expect(blueprintProtocol).toContain('所有新动画默认mode="quick"');
+    expect(blueprintProtocol).toContain("每个NPC必须是actors中的独立条目");
+    const f = await setup({}, normalized);
+    await f.create();
+    await f.until("assets-ready");
+    expect(f.model).toHaveBeenCalledWith(
+      expect.any(String),
+      "gpt",
+      "voxel",
+      expect.any(Object),
+    );
+    for (const call of f.animation.mock.calls as unknown as unknown[][])
+      expect(call.slice(2, 4)).toEqual(["gpt", "quick"]);
+    const run = await f.service.get("run");
+    const actor = await f.store.get<Actor>("actors", run.manifest.duck.actorId);
+    expect(actor.modelRevisions[0]).toMatchObject({
+      provider: "gpt",
+      mode: "voxel",
+    });
+    expect(
+      actor.animations.every((a) => a.provider === "gpt" && a.mode === "quick"),
+    ).toBe(true);
+  });
   it("queues navigation clips without chat/model generation, deduplicates requests and stores clips on the exact model", async () => {
     const s = await setup();
     await s.store.createActor(sceneActor.name, sceneActor.id);

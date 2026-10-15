@@ -51,6 +51,7 @@ export interface ExecutionState {
   duration: number;
   position: Vec3;
   heading: number;
+  blocked?: boolean;
 }
 export interface MotionOrigin {
   position: Vec3;
@@ -68,6 +69,22 @@ export interface ActionTiming {
 const distance = (a: Vec3, b: Vec3) => Math.hypot(...a.map((v, i) => v - b[i]));
 const lerp = (a: Vec3, b: Vec3, t: number): Vec3 =>
   a.map((v, i) => v + (b[i] - v) * t) as Vec3;
+function stepSample(s: CompiledStep, t: number) {
+  const along = s.length * t;
+  let i = 1;
+  while (i < s.points.length - 1 && s.distances[i] < along) i++;
+  const a = s.points[i - 1],
+    b = s.points[i],
+    span = s.distances[i] - s.distances[i - 1];
+  return {
+    a,
+    b,
+    position:
+      t === 1
+        ? ([...s.to] as Vec3)
+        : lerp(a, b, span ? (along - s.distances[i - 1]) / span : 1),
+  };
+}
 const angle = (a: number, b: number) =>
   Math.atan2(Math.sin(b - a), Math.cos(b - a));
 export interface MotionEnvironment {
@@ -380,6 +397,22 @@ export class MotionRuntime {
     if (id) this.assertId(id);
     return this.state ? structuredClone(this.state) : null;
   }
+  positionAt(seconds: number): Vec3 {
+    requireMotion(
+      Number.isFinite(seconds),
+      "INVALID_VALUE",
+      "进度必须为有限数值",
+    );
+    let time = Math.max(0, seconds);
+    for (const step of this.steps) {
+      if (time <= step.duration || step === this.steps.at(-1))
+        return step.source.type === "moveTo"
+          ? stepSample(step, Math.min(1, time / step.duration)).position
+          : [...step.from];
+      time -= step.duration;
+    }
+    throw new Error("请先准备动作");
+  }
   private assertId(id: string): void {
     requireMotion(
       this.state?.executionId === id,
@@ -439,7 +472,7 @@ export class MotionRuntime {
     this.sample();
     this.emit("seeked");
   }
-  advance(dt: number): void {
+  advance(dt: number, canMove?: (from: Vec3, to: Vec3) => boolean): void {
     requireMotion(
       Number.isFinite(dt) && dt >= 0,
       "INVALID_VALUE",
@@ -448,7 +481,24 @@ export class MotionRuntime {
     if (this.state?.status !== "running") return;
     while (dt > 0 && this.state.status === "running") {
       const step = this.steps[this.index],
-        amount = Math.min(dt, step.duration - this.local);
+        amount = Math.min(
+          dt,
+          step.duration - this.local,
+          canMove ? 1 / 60 : Infinity,
+        );
+      if (
+        canMove &&
+        step.source.type === "moveTo" &&
+        !canMove(
+          this.state.position,
+          stepSample(step, Math.min(1, (this.local + amount) / step.duration))
+            .position,
+        )
+      ) {
+        this.state.blocked = true;
+        return;
+      }
+      delete this.state.blocked;
       this.local += amount;
       this.elapsed += amount;
       dt -= amount;
@@ -486,13 +536,9 @@ export class MotionRuntime {
     let position: Vec3 = [...s.from],
       heading = s.heading;
     if (source.type === "moveTo") {
-      const along = s.length * t;
-      let i = 1;
-      while (i < s.points.length - 1 && s.distances[i] < along) i++;
-      const a = s.points[i - 1],
-        b = s.points[i],
-        span = s.distances[i] - s.distances[i - 1];
-      position = lerp(a, b, span ? (along - s.distances[i - 1]) / span : 1);
+      const sampled = stepSample(s, t),
+        { a, b } = sampled;
+      position = sampled.position;
 
       if (Math.hypot(b[0] - a[0], b[2] - a[2]) > 1e-6)
         heading = Math.atan2(b[0] - a[0], b[2] - a[2]);

@@ -21,6 +21,11 @@ import type { Navigation } from "../navigation/navigation";
 import { TraversalClearance } from "../navigation/traversalClearance";
 import { TraversalPlanner } from "../navigation/traversalPlanner";
 import { adaptTraversal } from "../navigation/adaptTraversal";
+import {
+  bodiesOverlap,
+  characterBody,
+  type CharacterBody,
+} from "../navigation/characterCollision";
 import { compileSceneAction } from "./actionCompiler";
 import { validateSceneDesign } from "../../shared/sceneDesign";
 import type {
@@ -110,6 +115,23 @@ export async function assembleScene(
   performance.instances = performance.instances.filter(
     (i) => !removed.has(i.id),
   );
+  // Reservations include untouched NPCs, successful roles and recoverable draft origins.
+  const reservations = new Map<string, CharacterBody>(
+    performance.instances.map((i) => [
+      i.id,
+      characterBody(i, actors.get(i.actorId)),
+    ]),
+  );
+  for (const role of plan.actors) {
+    const saved = draft.roles[role.key],
+      origin = saved?.locations[role.origin];
+    if (saved?.profile && origin?.state === "ready" && origin.points[0]?.ground)
+      reservations.set(saved.instanceId, {
+        id: saved.instanceId,
+        position: pointPosition(origin.points[0]),
+        ...saved.profile,
+      });
+  }
   const check = () => {
     if (signal?.aborted) throw new Error("已取消场景构建");
   };
@@ -181,6 +203,12 @@ export async function assembleScene(
           };
       instance.modelRevisionId = model.id;
       instance.scale = scale;
+      const available = (position: [number, number, number]) => {
+        const body = { id: instance.id, position, ...profile };
+        return [...reservations.values()].every(
+          (other) => !bodiesOverlap(body, other),
+        );
+      };
       const profileChanged =
         JSON.stringify(work.profile) !== JSON.stringify(profile);
       work.profile = structuredClone(profile);
@@ -197,6 +225,7 @@ export async function assembleScene(
       const unchanged =
         sameModel &&
         !!existing?.sceneMotion &&
+        available(existing.position) &&
         !!oldRole &&
         JSON.stringify(oldRole.locations) === JSON.stringify(role.locations) &&
         JSON.stringify(oldRole.actions) === JSON.stringify(role.actions) &&
@@ -270,6 +299,7 @@ export async function assembleScene(
             nav,
             signal,
             traversal,
+            available,
           ),
           locations = new Map<string, ResolvedLocation>();
         for (const intent of [...role.locations].sort(
@@ -306,7 +336,10 @@ export async function assembleScene(
               });
             } else if (
               location?.manual ||
-              (location?.state === "ready" && !profileChanged)
+              (location?.state === "ready" &&
+                !profileChanged &&
+                (intent.relation === "facing" ||
+                  location.points.every((p) => available(pointPosition(p)))))
             ) {
               const restored = {
                 intent,
@@ -341,6 +374,13 @@ export async function assembleScene(
                 ),
               );
             const result = locations.get(intent.key)!;
+            resolver.validate(result);
+            if (intent.key === role.origin)
+              reservations.set(instance.id, {
+                id: instance.id,
+                position: pointPosition(result.points[0]),
+                ...profile,
+              });
             location = work.locations[intent.key] = {
               intent: structuredClone(intent),
               name: index.features.get(intent.featureId)?.semantic.name,
@@ -472,6 +512,22 @@ export async function assembleScene(
         instance.sceneMotion.selectedActionId =
           actionIds[role.actions[0].key] ?? Object.values(actionIds)[0] ?? null;
       }
+      const originPoint = instance.sceneMotion!.points.find(
+        (p) => p.id === instance.sceneMotion!.startPointId,
+      );
+      const standingPosition = originPoint
+        ? pointPosition(originPoint)
+        : instance.position;
+      if (!available(standingPosition))
+        throw Object.assign(
+          new Error("起始站位与其他角色重叠，请调整标点后重新检查"),
+          { code: "CHARACTER_SPACE_OCCUPIED" },
+        );
+      reservations.set(instance.id, {
+        id: instance.id,
+        position: standingPosition,
+        ...profile,
+      });
       work.instance = structuredClone(instance);
       const runtimeStates = role.states
         .filter((s) => actionIds[s.action])

@@ -30,7 +30,7 @@ function addMachine(i: ActorInstance) {
           id: "back",
           type: "moveTo",
           speed: 2,
-          destination: [-5, 0, 0],
+          destination: [-5, 0, i.position[2]],
           path: { mode: "ground" },
           animation: { clipId: clip.id, repeat: "untilArrival" },
         },
@@ -75,13 +75,20 @@ function instance(id: string): ActorInstance {
     actorId: actor.id,
     modelRevisionId: revision.id,
     clipId: null,
-    position: [-5, 0, 0],
+    position: [-5, 0, id === "two" ? 3 : 0],
     rotation: 0,
     scale: 1,
     loop: false,
     sceneMotion: {
       schemaVersion: 1,
-      points: [{ id: "p1", name: "p1", ground: [5, 0, 0], height: 0 }],
+      points: [
+        {
+          id: "p1",
+          name: "p1",
+          ground: [5, 0, id === "two" ? 3 : 0],
+          height: 0,
+        },
+      ],
       navigation: { radius: 0.3, height: 3, climb: 0.3, slope: 35 },
       startPointId: null,
       selectedActionId: "action",
@@ -136,6 +143,66 @@ function setup(map = testMap, actors = actor) {
   return { port, instances, frames, resets, view };
 }
 describe("scene motion port", () => {
+  it("blocks at occupied paths without consuming action time, then resumes; seeks cannot overlap another NPC", async () => {
+    const { port, instances, view } = setup();
+    instances[1].position = [0, 0, 0];
+    try {
+      await port.executeAction("one");
+      view.onSceneFrame(20);
+      const blocked = port.getExecutionState("one")!;
+      expect(blocked.status).toBe("running");
+      expect(blocked.blocked).toBe(true);
+      expect(blocked.position[0]).toBeLessThanOrEqual(-0.72);
+      expect(blocked.elapsed).toBeLessThan(5);
+      view.onSceneFrame(1);
+      expect(port.getExecutionState("one")!.elapsed).toBe(blocked.elapsed);
+      expect(() => port.seekExecution("one", 2.5)).toThrow("重叠");
+      expect(port.getExecutionState("one")!.elapsed).toBe(blocked.elapsed);
+      port.updateConfiguration("two", (i) => {
+        i.position = [0, 0, 4];
+      });
+      view.onSceneFrame(5);
+      expect(port.getExecutionState("one")!.status).toBe("completed");
+      expect(port.getExecutionState("one")!.position[0]).toBeCloseTo(5);
+      expect(instances[0].position).toEqual([-5, 0, 0]);
+    } finally {
+      port.dispose();
+    }
+  });
+  it("rejects an overlapping start before applying a live pose and includes the temporary player in NPC collisions", async () => {
+    const { port, instances, view, frames } = setup();
+    instances[1].position = [-5, 0, 0];
+    try {
+      await expect(port.executeAction("one")).rejects.toThrow("重叠");
+      expect(frames.size).toBe(0);
+      instances[1].position = [-5, 0, 3];
+      Object.defineProperty(view, "playerCollisionBody", {
+        configurable: true,
+        value: {
+          id: "player:test",
+          position: [0, 0, 0],
+          radius: 0.3,
+          height: 2,
+        },
+      });
+      await port.executeAction("one");
+      view.onSceneFrame(8);
+      expect(port.getExecutionState("one")!.blocked).toBe(true);
+      expect(port.getExecutionState("one")!.position[0]).toBeLessThanOrEqual(
+        -0.72,
+      );
+      expect(
+        view.onPlayerMove([0, 0, 3], [-5, 0, 3], {
+          radius: 0.3,
+          height: 2,
+          climb: 0.3,
+          slope: 35,
+        }),
+      ).toBe(false);
+    } finally {
+      port.dispose();
+    }
+  });
   it("previews jump links without generation, then generates once on playback and lands at the map target", async () => {
     const map = structuredClone(testMap);
     map.objects.push({
@@ -282,6 +349,7 @@ describe("scene motion port", () => {
     }));
     const sourceActor = { ...actor, motionActions: sources },
       { port, instances, view } = setup(testMap, sourceActor);
+    instances[1].position = [8, 0, 8]; // This test exercises one machine, away from idle NPCs.
     for (const i of instances) {
       const c = i.sceneMotion!;
       c.schemaVersion = 2;
@@ -415,14 +483,14 @@ describe("scene motion port", () => {
       view.onSceneFrame(1);
       port.pauseExecution("one");
       view.onSceneFrame(1);
-      expect(port.getExecutionState("one")?.elapsed).toBe(1);
-      expect(port.getExecutionState("two")?.elapsed).toBe(2);
+      expect(port.getExecutionState("one")?.elapsed).toBeCloseTo(1);
+      expect(port.getExecutionState("two")?.elapsed).toBeCloseTo(2);
       port.seekExecution("one", 3);
       expect(port.getExecutionState("one")).toMatchObject({
         elapsed: 3,
         status: "paused",
       });
-      expect(port.getExecutionState("two")?.elapsed).toBe(2);
+      expect(port.getExecutionState("two")?.elapsed).toBeCloseTo(2);
       port.resumeExecution("one");
       view.onSceneFrame(100);
       expect(port.getExecutionState("one")?.position[0]).toBeCloseTo(5);

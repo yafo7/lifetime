@@ -1,4 +1,5 @@
-import { mapSpace } from "../../shared/sceneMotion";
+import { mapSpace, type NavigationProfile } from "../../shared/sceneMotion";
+import type { CharacterBody } from "../navigation/characterCollision";
 import type { SceneGeometry } from "../navigation/geometry";
 import type { MotionFrame } from "../motion/runtime";
 import * as THREE from "three";
@@ -111,6 +112,7 @@ export class Viewport {
   private selected: string | null = null;
   private player: {
     id: string;
+    profile: NavigationProfile;
     controls: ThirdPersonControls;
     run: AnimationClip;
     jump: AnimationClip;
@@ -120,6 +122,17 @@ export class Viewport {
     from: Pose | null;
   } | null = null;
   onPlayerFrame = (_frame: PlayerFrame | null) => {};
+  onPlayerMove = (_from: Vec3, _to: Vec3, _profile: NavigationProfile) => true;
+  get playerCollisionBody(): CharacterBody | null {
+    const player = this.player;
+    return player
+      ? {
+          id: player.id,
+          position: player.controls.motor.frame.position,
+          ...player.profile,
+        }
+      : null;
+  }
   get playerState(): PlayerFrame | null {
     return this.player?.controls.motor.frame ?? null;
   }
@@ -480,6 +493,7 @@ export class Viewport {
       this.resize();
       this.player = {
         id: instance.id,
+        profile: nav.profile,
         controls: new ThirdPersonControls(
           this.canvas,
           this.camera,
@@ -489,6 +503,7 @@ export class Viewport {
           (instance.rotation * Math.PI) / 180,
           jump.duration,
           exit,
+          (from, to) => this.onPlayerMove(from, to, nav.profile),
         ),
         run,
         jump,
